@@ -1,45 +1,61 @@
 # ==============================================================================
 # ENVIRONMENT & SECRETS
 # ==============================================================================
-# Ignore all .env files, except the .env.example template
+# Secrets and local configs must never end up in any image layer.
+# Docker Compose injects them into the container at runtime via env_file.
 .env
 .env.local
 .env.*.local
 !.env.example
 
 # ==============================================================================
-# PYTHON & TOOLING CACHES
+# PYTHON CACHES & VIRTUAL ENVIRONMENTS
 # ==============================================================================
+.venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-.coverage
-coverage.xml
-htmlcov/
 
 # ==============================================================================
-# VIRTUAL ENVIRONMENTS & BUILD ARTIFACTS
+# VERSION CONTROL & GIT
 # ==============================================================================
-.venv/
-venv/
-env/
-ENV/
-build/
-dist/
-*.egg-info/
-*.egg
+# Git history is never needed inside the image and wastes build context.
+.git/
+.gitignore
 
 # ==============================================================================
-# IDE & EDITORS
+# IDE & EDITOR FILES
 # ==============================================================================
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+
+# ==============================================================================
+# DOCKER FILES
+# ==============================================================================
+# Docker-related files are not needed inside the final image.
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.override.yml
+
+# ==============================================================================
+# DOCUMENTATION & TESTS
+# ==============================================================================
+# Documentation and tests are not needed in the production image.
+README.md
+LICENSE
+CHANGELOG.md
+docs/
+tests/
+test_*.py
 
 # ==============================================================================
 # OS SPECIFIC
@@ -49,15 +65,7 @@ Thumbs.db
 Desktop.ini
 
 # ==============================================================================
-# DOCKER & DEPLOYMENT
+# LOGS
 # ==============================================================================
-# Local docker-compose overrides (should not be committed to the repository)
-docker-compose.override.yml
-
-# ==============================================================================
-# IMPORTANT: WHAT TO COMMIT
-# ==============================================================================
-# Ensure the following files ARE COMMITTED to git (do not add them to .gitignore):
-# - uv.lock (critical for reproducible builds via uv)
-# - alembic/versions/*.py (database migration history)
-# - .env.example (configuration template for other developers)
+*.log
+logs/
