@@ -32,15 +32,22 @@ async def start_handler(
         session: The active asynchronous SQLAlchemy session.
         state: The FSM context for managing user state.
     """
+    # Anonymous/channel-posted updates carry no sender and cannot be
+    # associated with a dictionary, so they are ignored.
+    from_user = message.from_user
+    if from_user is None:
+        return
+
     user = await UserQueries.get_or_create_user(
         session=session,
-        telegram_id=str(message.from_user.id),
-        username=message.from_user.first_name,
+        telegram_id=str(from_user.id),
+        username=from_user.first_name,
     )
 
     greeting_name = user.telegram_username or "друг"
     await message.answer(
-        f"Привет, {greeting_name}! Добро пожаловать! Начинаем викторину по английским словам."
+        f"Привет, {greeting_name}! Добро пожаловать! "
+        "Начинаем викторину по английским словам."
     )
 
     from src.handlers.quiz import send_quiz
@@ -87,6 +94,7 @@ async def help_handler(message: types.Message) -> None:
         "/start - начать викторину по английским словам\n"
         "/stop - остановить викторину и сбросить состояние\n"
         "/help - показать это сообщение с подсказками\n\n"
-        "Также используйте кнопки для добавления, удаления слов и перехода к следующему вопросу."
+        "Также используйте кнопки для добавления, удаления слов "
+        "и перехода к следующему вопросу."
     )
     await message.answer(help_text, parse_mode="Markdown")

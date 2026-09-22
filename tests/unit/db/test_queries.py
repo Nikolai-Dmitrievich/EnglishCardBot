@@ -35,7 +35,8 @@ class TestUserQueries:
         assert user.telegram_username == "Nikolai"
 
     async def test_get_or_create_is_idempotent(self, session: AsyncSession) -> None:
-        """Verify that get_or_create returns the same user instance on subsequent calls."""
+        """Verify that get_or_create returns the same user instance on
+        subsequent calls."""
         first = await UserQueries.get_or_create_user(session, "100", "Nikolai")
         second = await UserQueries.get_or_create_user(session, "100", "Nikolai")
 
@@ -44,7 +45,8 @@ class TestUserQueries:
     async def test_get_or_create_distinguishes_users(
         self, session: AsyncSession
     ) -> None:
-        """Verify that get_or_create creates distinct records for different Telegram IDs."""
+        """Verify that get_or_create creates distinct records for different
+        Telegram IDs."""
         first = await UserQueries.get_or_create_user(session, "100")
         second = await UserQueries.get_or_create_user(session, "200")
 
@@ -63,7 +65,8 @@ class TestUserWords:
     """Tests for user-specific word management."""
 
     async def test_add_user_word(self, session: AsyncSession) -> None:
-        """Verify that a new custom word is successfully added to the user's dictionary."""
+        """Verify that a new custom word is successfully added to the
+        user's dictionary."""
         user = await UserQueries.create_user(session, "100")
 
         assert await WordQueries.add_user_word(session, user, "массив", "array") is True
@@ -74,7 +77,8 @@ class TestUserWords:
         ]
 
     async def test_add_duplicate_word_is_rejected(self, session: AsyncSession) -> None:
-        """Verify that attempting to add a duplicate word for the same user is rejected."""
+        """Verify that attempting to add a duplicate word for the same user
+        is rejected."""
         user = await UserQueries.create_user(session, "100")
         await WordQueries.add_user_word(session, user, "массив", "array")
 
@@ -89,7 +93,8 @@ class TestUserWords:
     async def test_same_word_allowed_for_different_users(
         self, session: AsyncSession
     ) -> None:
-        """Verify that different users can add the same source word with different translations."""
+        """Verify that different users can add the same source word with
+        different translations."""
         first = await UserQueries.create_user(session, "100")
         second = await UserQueries.create_user(session, "200")
 
@@ -212,7 +217,8 @@ class TestGetWrongTranslations:
     async def test_excludes_correct_translation(
         self, session: AsyncSession, common_words: Any
     ) -> None:
-        """Verify that the correct translation is never included in the wrong options."""
+        """Verify that the correct translation is never included in the
+        wrong options."""
         user = await UserQueries.create_user(session, "100")
 
         wrong = await WordQueries.get_wrong_translations(
@@ -225,7 +231,8 @@ class TestGetWrongTranslations:
     async def test_respects_limit(
         self, session: AsyncSession, common_words: Any
     ) -> None:
-        """Verify that the returned list of wrong options strictly respects the limit parameter."""
+        """Verify that the returned list of wrong options strictly respects
+        the limit parameter."""
         user = await UserQueries.create_user(session, "100")
 
         assert (
@@ -240,7 +247,8 @@ class TestGetWrongTranslations:
     async def test_returns_empty_when_nothing_to_offer(
         self, session: AsyncSession
     ) -> None:
-        """Verify that an empty list is returned when no alternative translations exist."""
+        """Verify that an empty list is returned when no alternative
+        translations exist."""
         user = await UserQueries.create_user(session, "100")
 
         assert await WordQueries.get_wrong_translations(session, user, "computer") == []
@@ -277,7 +285,8 @@ class TestPopulateCommonWords:
         assert total == len(tech_words)
 
     async def test_is_idempotent(self, session: AsyncSession, tech_words: Any) -> None:
-        """Verify that running the seeding process multiple times does not create duplicates."""
+        """Verify that running the seeding process multiple times does not
+        create duplicates."""
         await WordQueries.populate_common_words(session, tech_words)
 
         assert await WordQueries.populate_common_words(session, tech_words) == 0
@@ -285,7 +294,8 @@ class TestPopulateCommonWords:
         assert total == len(tech_words)
 
     async def test_skips_existing_and_adds_new(self, session: AsyncSession) -> None:
-        """Verify that existing words are skipped while new words are successfully added."""
+        """Verify that existing words are skipped while new words are
+        successfully added."""
         session.add(Word(word="компьютер", translation="computer"))
         await session.commit()
 
@@ -295,4 +305,5 @@ class TestPopulateCommonWords:
 
         assert added == 1
         computer = await session.scalar(select(Word).where(Word.word == "компьютер"))
+        assert computer is not None
         assert computer.translation == "computer"

@@ -36,8 +36,7 @@ async def seed_initial_words() -> int:
     """
     async with session_factory() as session:
         try:
-            count = await WordQueries.populate_common_words(session, TECH_WORDS_DATA)
-            return count
+            return await WordQueries.populate_common_words(session, TECH_WORDS_DATA)
         except SQLAlchemyError as e:
             logger.error("Database error while seeding initial words: %s", e)
             return 0

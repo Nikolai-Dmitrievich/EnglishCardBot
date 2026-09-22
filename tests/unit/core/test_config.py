@@ -98,14 +98,16 @@ class TestOverrides:
         assert settings.bot.proxy == "http://127.0.0.1:12334"
 
     def test_engine_defaults(self, env: Callable[..., Settings]) -> None:
-        """Verify that SQLAlchemy engine settings fall back to their defined defaults."""
+        """Verify that SQLAlchemy engine settings fall back to their
+        defined defaults."""
         settings = env()
 
         assert settings.db.engine.pool_size == 5
         assert settings.db.engine.echo is False
 
     def test_engine_override_from_env(self, env: Callable[..., Settings]) -> None:
-        """Verify that SQLAlchemy engine settings can be overridden via environment variables."""
+        """Verify that SQLAlchemy engine settings can be overridden via
+        environment variables."""
         settings = env(DB__ENGINE__POOL_SIZE="20", DB__ENGINE__ECHO="true")
 
         assert settings.db.engine.pool_size == 20

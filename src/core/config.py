@@ -6,7 +6,7 @@ providing type validation, environment variable parsing, and secure handling
 of sensitive data such as database passwords and bot tokens.
 """
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,8 +59,22 @@ class DatabaseSettings(BaseModel):
 class BotSettings(BaseModel):
     """Telegram Bot configuration settings."""
 
-    token: SecretStr
+    token: SecretStr = Field(min_length=1)
     proxy: str | None = None
+
+    @field_validator("proxy", mode="before")
+    @classmethod
+    def _empty_proxy_to_none(cls, value: object) -> object:
+        """
+        Normalise an unset proxy to ``None``.
+
+        Deployment configs (``.env.example``, Docker Compose) express "no proxy"
+        as an empty ``BOT__PROXY=`` value. Treating it as ``None`` keeps callers
+        such as ``main.py`` from handing a blank URL to the HTTP session.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class Settings(BaseSettings):

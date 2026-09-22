@@ -54,7 +54,9 @@ async def send_quiz(
         user=user,
     )
 
-    if not word:
+    # The query returns both values or neither; checking both keeps the
+    # narrowed types usable as str below.
+    if word is None or correct_translation is None:
         await message.answer("В базе нет слов для викторины. Добавьте новые слова.")
         return
 

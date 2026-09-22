@@ -9,14 +9,15 @@ and a test client for simulating user interactions.
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 import pytest_asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import TelegramMethod
-from aiogram.methods.base import TelegramType
 from aiogram.types import Chat, Message, Update
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -68,15 +69,15 @@ class RecordingSession(BaseSession):
 
     def __init__(self) -> None:
         super().__init__()
-        self.sent: list[TelegramMethod[TelegramType]] = []
+        self.sent: list[TelegramMethod[Any]] = []
         self._message_id = 0
 
     async def close(self) -> None:
         pass
 
     async def make_request(
-        self, bot: Bot, method: TelegramMethod[TelegramType], timeout: int | None = None
-    ) -> TelegramType:
+        self, bot: Bot, method: TelegramMethod[Any], timeout: int | None = None
+    ) -> Any:
         self.sent.append(method)
         self._message_id += 1
 
@@ -90,7 +91,7 @@ class RecordingSession(BaseSession):
             )
 
         # Fallback for other method types
-        return Message(  # type: ignore[return-value]
+        return Message(
             message_id=self._message_id,
             date=datetime.now(tz=UTC),
             chat=Chat(id=TEST_CHAT_ID, type="private"),
@@ -112,7 +113,7 @@ class RecordingSession(BaseSession):
         return [str(method.text) for method in self.sent if hasattr(method, "text")]
 
     def last_keyboard(self) -> list[str]:
-        """Retrieve the text labels of buttons from the last message with a reply keyboard."""
+        """Return button labels of the last message that had a reply keyboard."""
         for method in reversed(self.sent):
             markup = getattr(method, "reply_markup", None)
             if markup is not None and hasattr(markup, "keyboard"):
@@ -195,24 +196,32 @@ async def bot() -> AsyncGenerator[Bot]:
 
 
 @pytest.fixture
-def dp(session_factory: async_sessionmaker[AsyncSession]) -> Dispatcher:
+def dp(session_factory: async_sessionmaker[AsyncSession]):
     """
     Provide a configured Dispatcher instance.
 
     Routers are attached in the same order as in src/main.py to ensure
     StateFilter resolution matches the production environment.
+
+    The routers are module-level singletons, so they are detached on teardown.
+    Without this, the second test using the fixture fails with aiogram's
+    "Router is already attached" error.
     """
     dispatcher = Dispatcher(storage=MemoryStorage())
 
-    dispatcher.include_router(common.router)
-    dispatcher.include_router(quiz.router)
-    dispatcher.include_router(words.router)
+    routers = (common.router, quiz.router, words.router)
+    for router in routers:
+        dispatcher.include_router(router)
 
     middleware = DatabaseMiddleware(session_factory)
     dispatcher.message.middleware(middleware)
     dispatcher.callback_query.middleware(middleware)
 
-    return dispatcher
+    yield dispatcher
+
+    dispatcher.sub_routers.clear()
+    for router in routers:
+        router._parent_router = None
 
 
 @pytest.fixture
@@ -271,13 +280,14 @@ def client(bot: Bot, dp: Dispatcher):
 async def fsm_state(bot: Bot, dp: Dispatcher):
     """
     Provide helpers to read FSM state and data directly from storage.
+
+    ``StorageBase.get_state`` returns the raw state string (or None) in
+    aiogram 3.x, so no unwrapping of a state object is required here.
     """
-    from aiogram.fsm.storage.base import StorageKey
 
     async def get_state(user_id: int = TEST_USER_ID) -> str | None:
         key = StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id)
-        state = await dp.storage.get_state(key)
-        return state.state if state else None
+        return await dp.storage.get_state(key)
 
     async def get_data(user_id: int = TEST_USER_ID) -> dict:
         key = StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id)

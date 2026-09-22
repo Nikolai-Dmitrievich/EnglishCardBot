@@ -6,9 +6,9 @@ on users, words, and user-specific translations using SQLAlchemy 2.0
 asynchronous sessions.
 """
 
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, func, literal_column, select
+from sqlalchemy import delete, false, func, select, true
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,14 +182,19 @@ class WordQueries:
         Returns:
             True if the word was deleted, False if it was not found.
         """
-        result: CursorResult[Any] = await session.execute(
-            delete(UserWord).where(
-                UserWord.user_id == user.id,
-                UserWord.word_user == word_user,
-            )
+        # A DML statement yields a CursorResult, which is the only result
+        # exposing rowcount; session.execute is typed as returning Result.
+        result = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                delete(UserWord).where(
+                    UserWord.user_id == user.id,
+                    UserWord.word_user == word_user,
+                )
+            ),
         )
         await session.commit()
-        return result.rowcount > 0  # type: ignore[attr-defined]
+        return result.rowcount > 0
 
     @staticmethod
     async def get_random_word_for_user(
@@ -200,8 +205,8 @@ class WordQueries:
         Fetch a random word for the user's training session.
 
         The selection prioritizes the user's custom words first, then
-        falls back to the common dictionary. Uses PostgreSQL's
-        ``RANDOM()`` function for uniform distribution.
+        falls back to the common dictionary. Uses ``RANDOM()`` for
+        uniform distribution across the combined pool.
 
         Args:
             session: The active asynchronous SQLAlchemy session.
@@ -211,16 +216,19 @@ class WordQueries:
             A tuple of (word, translation, is_user_word). Returns
             (None, None, False) if no words are available.
         """
+        # true()/false() rather than literal_column("TRUE"): the latter leaks the
+        # raw driver representation (SQLite returns 1/0), breaking the bool return
+        # type contract. SQLAlchemy renders these booleans per dialect.
         user_words_q: Any = select(
             UserWord.word_user.label("word"),
             UserWord.translation_user.label("translation"),
-            literal_column("TRUE").label("is_user_word"),
+            true().label("is_user_word"),
         ).where(UserWord.user_id == user.id)
 
         common_words_q: Any = select(
             Word.word.label("word"),
             Word.translation.label("translation"),
-            literal_column("FALSE").label("is_user_word"),
+            false().label("is_user_word"),
         )
 
         combined_q = user_words_q.union_all(common_words_q).subquery()
@@ -231,7 +239,7 @@ class WordQueries:
 
         if row is None:
             return None, None, False
-        return row.word, row.translation, row.is_user_word
+        return row.word, row.translation, bool(row.is_user_word)
 
     @staticmethod
     async def get_wrong_translations(
@@ -245,7 +253,7 @@ class WordQueries:
 
         Combines translations from the user's custom words and the
         common dictionary, excluding the correct answer. Results are
-        randomized using PostgreSQL's ``RANDOM()`` function.
+        randomized using the dialect's ``RANDOM()`` function.
 
         Args:
             session: The active asynchronous SQLAlchemy session.

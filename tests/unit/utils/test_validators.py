@@ -26,7 +26,8 @@ class TestIsRussian:
         ],
     )
     def test_accepts_russian(self, text: str) -> None:
-        """Verify that valid Russian strings, including 'ё' and hyphens, are accepted."""
+        """Verify that valid Russian strings, including 'ё' and hyphens,
+        are accepted."""
         assert is_russian(text) is True
 
     @pytest.mark.parametrize(
@@ -67,7 +68,8 @@ class TestIsEnglish:
         ],
     )
     def test_accepts_english(self, text: str) -> None:
-        """Verify that valid English strings, including hyphens and spaces, are accepted."""
+        """Verify that valid English strings, including hyphens and spaces,
+        are accepted."""
         assert is_english(text) is True
 
     @pytest.mark.parametrize(
@@ -88,5 +90,6 @@ class TestIsEnglish:
         assert is_english(text) is False
 
     def test_rejects_mixed_alphabets(self) -> None:
-        """Verify that strings containing a mix of Cyrillic and Latin characters are rejected."""
+        """Verify that strings containing a mix of Cyrillic and Latin
+        characters are rejected."""
         assert is_english("привет world") is False

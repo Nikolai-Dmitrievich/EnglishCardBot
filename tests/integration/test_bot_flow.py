@@ -2,16 +2,18 @@
 Integration tests for the English Card Bot.
 
 These tests verify the complete flow through the real Dispatcher,
-database middleware, FSM, and SQLAlchemy queries. No network calls
-are made - the bot operates with RecordingSession from conftest.
+database middleware, FSM, and SQLAlchemy queries. No network calls are
+made - the bot operates with RecordingSession from conftest.
 """
 
 from typing import Any
 
+from aiogram.fsm.storage.base import StorageKey
 from sqlalchemy import func, select
 
 from src.db.models import User, UserWord
 from src.handlers.quiz import CommandText
+from tests.conftest import TEST_USER_ID
 
 QUIZ_STATE = "MyStates:waiting_for_quiz_answer"
 RUSSIAN_STATE = "MyStates:waiting_for_russian_word"
@@ -193,7 +195,7 @@ class TestAddWord:
         assert stored.translation_user == "array"
 
     async def test_non_russian_word_is_rejected(
-        self, client: Any, fsm_state: Any
+        self, client: Any, common_words: Any, fsm_state: Any
     ) -> None:
         await client.send("/start")
         await client.send(CommandText.ADD_WORD)
@@ -205,7 +207,7 @@ class TestAddWord:
         assert await fsm_state["state"]() == RUSSIAN_STATE
 
     async def test_non_english_translation_is_rejected(
-        self, client: Any, fsm_state: Any
+        self, client: Any, common_words: Any, fsm_state: Any
     ) -> None:
         await client.send("/start")
         await client.send(CommandText.ADD_WORD)
@@ -230,7 +232,31 @@ class TestAddWord:
         await client.send("массив")
         await client.send("vector")
 
-        assert "уже есть в вашем словаре" in client.texts[0]
+        assert any("уже есть в вашем словаре" in text for text in client.texts)
+
+    async def test_missing_russian_word_in_state_reports_error(
+        self,
+        client: Any,
+        bot: Any,
+        dp: Any,
+        common_words: Any,
+        fsm_state: Any,
+    ) -> None:
+        # Regression guard: if FSM data loses the buffered Russian word while
+        # still in the translation state, the handler must fail gracefully
+        # instead of persisting a word with a None source.
+        await client.send("/start")
+        await client.send(CommandText.ADD_WORD)
+        await client.send("массив")
+
+        key = StorageKey(bot_id=bot.id, chat_id=TEST_USER_ID, user_id=TEST_USER_ID)
+        await dp.storage.set_data(key, {})
+        client.clear()
+
+        await client.send("array")
+
+        assert "не удалось получить русское слово" in client.texts[0]
+        assert await fsm_state["state"]() is None
 
     async def test_cancel_on_russian_step(
         self, client: Any, session: Any, common_words: Any, fsm_state: Any
@@ -280,7 +306,7 @@ class TestDeleteWord:
 
         await client.send("массив")
 
-        assert "удалено из вашего словаря" in client.texts[0]
+        assert any("удалено из вашего словаря" in text for text in client.texts)
         assert await session.scalar(select(func.count()).select_from(UserWord)) == 0
 
     async def test_delete_without_words(
@@ -306,7 +332,7 @@ class TestDeleteWord:
         await client.send(CommandText.DELETE_WORD)
         await client.send(CommandText.CANCEL)
 
-        assert "Удаление отменено" in client.texts[0]
+        assert any("Удаление отменено" in text for text in client.texts)
         assert await session.scalar(select(func.count()).select_from(UserWord)) == 1
 
     async def test_unknown_word_is_reported(
@@ -321,7 +347,7 @@ class TestDeleteWord:
         await client.send(CommandText.DELETE_WORD)
         await client.send("несуществующее слово")
 
-        assert "не найдено в вашем словаре" in client.texts[0]
+        assert any("не найдено в вашем словаре" in text for text in client.texts)
         assert await session.scalar(select(func.count()).select_from(UserWord)) == 1
 
 

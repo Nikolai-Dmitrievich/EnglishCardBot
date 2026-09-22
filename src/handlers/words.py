@@ -19,6 +19,8 @@ from src.utils.validators import is_english, is_russian
 
 router = Router()
 
+NON_TEXT_REPLY = "Пожалуйста, отправьте обычное текстовое сообщение."
+
 
 async def start_add_word(message: types.Message, state: FSMContext) -> None:
     """
@@ -57,7 +59,12 @@ async def add_word_get_russian(message: types.Message, state: FSMContext) -> Non
         message: The incoming Telegram message containing the Russian word.
         state: The FSM context used to persist the add-word flow state.
     """
-    new_word = message.text.strip()
+    text = message.text
+    if text is None:
+        await message.answer(NON_TEXT_REPLY)
+        return
+
+    new_word = text.strip()
 
     if new_word == CommandText.CANCEL:
         await message.answer("Добавление слова отменено.")
@@ -103,7 +110,12 @@ async def add_word_get_english(
         user: The User instance who owns the new word.
         state: The FSM context holding the previously entered Russian word.
     """
-    translation = message.text.strip()
+    text = message.text
+    if text is None:
+        await message.answer(NON_TEXT_REPLY)
+        return
+
+    translation = text.strip()
 
     if translation == CommandText.CANCEL:
         await message.answer("Добавление слова отменено.")
@@ -113,7 +125,8 @@ async def add_word_get_english(
 
     if not is_english(translation):
         await message.answer(
-            "Пожалуйста, введите корректный английский перевод (только английские буквы)."
+            "Пожалуйста, введите корректный английский перевод "
+            "(только английские буквы)."
         )
         return
 
@@ -209,7 +222,12 @@ async def delete_word_confirm(
         user: The User instance who owns the word.
         state: The FSM context holding the delete-word flow state.
     """
-    word_to_delete = message.text.strip()
+    text = message.text
+    if text is None:
+        await message.answer(NON_TEXT_REPLY)
+        return
+
+    word_to_delete = text.strip()
 
     if word_to_delete == CommandText.CANCEL:
         await message.answer("Удаление отменено.")
