@@ -77,6 +77,14 @@ class BotSettings(BaseModel):
         return value
 
 
+class AISettings(BaseModel):
+    enabled: bool = True
+    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_model: str
+    request_timeout_seconds: int = Field(default=30, gt=0)
+    prompt_version: str = "tutor_v1"
+
+
 class Settings(BaseSettings):
     """
     Root application settings.
@@ -87,6 +95,7 @@ class Settings(BaseSettings):
 
     bot: BotSettings
     db: DatabaseSettings
+    ai: AISettings
 
     model_config = SettingsConfigDict(
         env_file=".env",
