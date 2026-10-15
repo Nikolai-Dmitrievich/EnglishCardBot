@@ -28,6 +28,12 @@ class _FailingSession:
     async def execute(self, *args: Any, **kwargs: Any) -> None:
         raise SQLAlchemyError("database is unavailable")
 
+    async def commit(self) -> None:
+        pass
+
+    async def rollback(self) -> None:
+        pass
+
 
 class TestSeedInitialWords:
     """Tests for the idempotent startup seeding of the common dictionary."""

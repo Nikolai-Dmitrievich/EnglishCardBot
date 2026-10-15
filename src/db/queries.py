@@ -162,7 +162,7 @@ class WordQueries:
             translation_user=translation_user,
         )
         session.add(new_word)
-        await session.commit()
+        await session.flush()
         return True
 
     @staticmethod
@@ -193,7 +193,6 @@ class WordQueries:
                 )
             ),
         )
-        await session.commit()
         return result.rowcount > 0
 
     @staticmethod
@@ -282,6 +281,58 @@ class WordQueries:
         return list(result.scalars().all())
 
     @staticmethod
+    async def increment_word_error_count(
+        session: AsyncSession,
+        user: User,
+        word_user: str,
+    ) -> None:
+        """
+        Increment the error counter for a user's custom word.
+
+        Args:
+            session: The active asynchronous SQLAlchemy session.
+            user: The User who owns the word.
+            word_user: The word whose error count should be incremented.
+        """
+        result = await session.execute(
+            select(UserWord).where(
+                UserWord.user_id == user.id,
+                UserWord.word_user == word_user,
+            )
+        )
+        user_word = result.scalar_one_or_none()
+        if user_word is not None:
+            user_word.errors_count += 1
+            await session.flush()
+
+    @staticmethod
+    async def get_weak_words(
+        session: AsyncSession,
+        user: User,
+        limit: int = 10,
+    ) -> list[UserWord]:
+        """
+        Retrieve the user's most error-prone words, sorted by error count.
+
+        Only returns words that have been missed at least once.
+
+        Args:
+            session: The active asynchronous SQLAlchemy session.
+            user: The User whose weak words should be fetched.
+            limit: Maximum number of words to return.
+
+        Returns:
+            A list of UserWord instances sorted by error count descending.
+        """
+        result = await session.execute(
+            select(UserWord)
+            .where(UserWord.user_id == user.id, UserWord.errors_count > 0)
+            .order_by(UserWord.errors_count.desc(), UserWord.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def populate_common_words(
         session: AsyncSession,
         tech_words_data: list[tuple[str, str]],
@@ -309,7 +360,7 @@ class WordQueries:
                 added_count += 1
 
         if added_count > 0:
-            await session.commit()
+            await session.flush()
 
         return added_count
 

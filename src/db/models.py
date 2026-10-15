@@ -76,6 +76,7 @@ class UserWord(Base):
     )
     word_user: Mapped[str] = mapped_column(String(200), nullable=False)
     translation_user: Mapped[str] = mapped_column(String(200), nullable=False)
+    errors_count: Mapped[int] = mapped_column(default=0, nullable=False)
     created_at: Mapped[CreatedAt]
 
     user: Mapped["User"] = relationship(back_populates="words")

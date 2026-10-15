@@ -56,6 +56,10 @@ class DatabaseMiddleware(BaseMiddleware):
     This middleware ensures that every handler execution has an active
     database session. It also proactively fetches or creates the user
     record, making it available to handlers via dependency injection.
+
+    The handler call defines the transaction boundary: changes are committed
+    only after a successful return, and any exception rolls the session back
+    so a partially applied update can never reach the database.
     """
 
     def __init__(self, session_pool: async_sessionmaker[AsyncSession]) -> None:
@@ -70,14 +74,18 @@ class DatabaseMiddleware(BaseMiddleware):
         async with self.session_pool() as session:
             data["session"] = session
 
-            event_from_user = data.get("event_from_user")
-            if event_from_user is not None:
-                data["user"] = await UserQueries.get_or_create_user(
-                    session=session,
-                    telegram_id=str(event_from_user.id),
-                    username=event_from_user.first_name,
-                )
+            try:
+                event_from_user = data.get("event_from_user")
+                if event_from_user is not None:
+                    data["user"] = await UserQueries.get_or_create_user(
+                        session=session,
+                        telegram_id=str(event_from_user.id),
+                        username=event_from_user.first_name,
+                    )
 
-            result = await handler(event, data)
-            await session.commit()
-            return result
+                result = await handler(event, data)
+                await session.commit()
+                return result
+            except Exception:
+                await session.rollback()
+                raise

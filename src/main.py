@@ -7,6 +7,7 @@ dispatcher, registers middlewares and routers, and starts the polling process.
 
 import asyncio
 import logging
+import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -16,7 +17,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.core.config import settings
 from src.core.database import DatabaseMiddleware, session_factory
 from src.db.queries import TECH_WORDS_DATA, WordQueries
-from src.handlers import common, quiz, words
+from src.handlers import ai_quiz, common, quiz, words
+from src.mcp.tools import mcp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,8 +38,11 @@ async def seed_initial_words() -> int:
     """
     async with session_factory() as session:
         try:
-            return await WordQueries.populate_common_words(session, TECH_WORDS_DATA)
+            count = await WordQueries.populate_common_words(session, TECH_WORDS_DATA)
+            await session.commit()
+            return count
         except SQLAlchemyError as e:
+            await session.rollback()
             logger.error("Database error while seeding initial words: %s", e)
             return 0
 
@@ -66,6 +71,10 @@ async def main() -> None:
     dp.callback_query.middleware(DatabaseMiddleware(session_factory))
 
     dp.include_router(common.router)
+    # Registered before quiz.router: its StateFilter(waiting_for_quiz_answer)
+    # matches any text, so it would otherwise swallow /quiz_ai while a quiz
+    # question is pending.
+    dp.include_router(ai_quiz.router)
     dp.include_router(quiz.router)
     dp.include_router(words.router)
 
@@ -79,8 +88,28 @@ async def main() -> None:
     await dp.start_polling(bot)
 
 
+def run_mcp_server() -> None:
+    """
+    Start the MCP server on the stdio transport.
+
+    Started separately from the bot with ``uv run python -m src.main mcp``.
+    Because the stdio transport owns stdout, log records are redirected to
+    stderr to keep the protocol stream clean.
+    """
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+    root_logger.addHandler(logging.StreamHandler(sys.stderr))
+
+    logger.info("MCP server started on stdio transport")
+    mcp.run(transport="stdio")
+
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped by user")
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        run_mcp_server()
+    else:
+        try:
+            asyncio.run(main())
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Bot stopped by user")

@@ -166,6 +166,11 @@ async def quiz_answer_handler(
         return
 
     if text in options:
+        await WordQueries.increment_word_error_count(
+            session=session,
+            user=user,
+            word_user=data.get("target_word", ""),
+        )
         buttons = [
             types.KeyboardButton(text=opt if opt != text else f"{opt} ❌")
             for opt in options

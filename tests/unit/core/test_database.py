@@ -173,6 +173,9 @@ class TestUserInjection:
             async def commit(self) -> None:
                 return None
 
+            async def rollback(self) -> None:
+                return None
+
         broken_factory: Callable[[], BrokenSession] = BrokenSession
         broken_middleware = DatabaseMiddleware(broken_factory)  # type: ignore[arg-type]
 
