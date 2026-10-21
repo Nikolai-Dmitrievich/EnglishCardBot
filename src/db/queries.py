@@ -6,13 +6,14 @@ on users, words, and user-specific translations using SQLAlchemy 2.0
 asynchronous sessions.
 """
 
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import delete, false, func, select, true
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import User, UserWord, Word
+from .models import User, UserWord, Word, WordError
 
 
 class UserQueries:
@@ -281,36 +282,109 @@ class WordQueries:
         return list(result.scalars().all())
 
     @staticmethod
-    async def increment_word_error_count(
+    async def _record_error(
         session: AsyncSession,
         user: User,
-        word_user: str,
+        user_word_id: int | None,
+        common_word_id: int | None,
+    ) -> None:
+        """Persist one error row against already resolved dictionary ids."""
+        session.add(
+            WordError(
+                user_id=user.id,
+                user_word_id=user_word_id,
+                common_word_id=common_word_id,
+            )
+        )
+        await session.flush()
+
+    @staticmethod
+    async def record_error_for_word(
+        session: AsyncSession,
+        user: User,
+        word: str,
     ) -> None:
         """
-        Increment the error counter for a user's custom word.
+        Record a single error occurrence against the word the user missed.
+
+        The word is resolved against the user's custom dictionary first and
+        then against the common one, so the error row always points at a
+        concrete dictionary entry. Keeping the resolved FK (rather than only
+        the word text) is what lets ``/stat`` group errors per word and lets
+        deleting a word clean up its error history.
 
         Args:
             session: The active asynchronous SQLAlchemy session.
-            user: The User who owns the word.
-            word_user: The word whose error count should be incremented.
+            user: The User who made the error.
+            word: The prompt word the user answered incorrectly.
         """
-        result = await session.execute(
-            select(UserWord).where(
+        user_word_id = await session.scalar(
+            select(UserWord.id).where(
                 UserWord.user_id == user.id,
-                UserWord.word_user == word_user,
+                UserWord.word_user == word,
             )
         )
-        user_word = result.scalar_one_or_none()
-        if user_word is not None:
-            user_word.errors_count += 1
-            await session.flush()
+        common_word_id = (
+            None
+            if user_word_id is not None
+            else await session.scalar(select(Word.id).where(Word.word == word))
+        )
+
+        await WordQueries._record_error(
+            session=session,
+            user=user,
+            user_word_id=user_word_id,
+            common_word_id=common_word_id,
+        )
+
+    @staticmethod
+    async def record_error_for_translation(
+        session: AsyncSession,
+        user: User,
+        translation: str,
+    ) -> None:
+        """
+        Record an error identified by the English side of a word pair.
+
+        The AI quiz asks for an English word to fill a blank, so the option
+        the user missed is a translation, not a dictionary headword. Resolving
+        it through ``translation_user``/``translation`` maps the miss back onto
+        the same dictionary entries the plain quiz uses, which keeps ``/stat``
+        and ``get_weak_words`` reporting one merged count per word regardless
+        of which quiz produced the error.
+
+        Args:
+            session: The active asynchronous SQLAlchemy session.
+            user: The User who made the error.
+            translation: The English option the user failed to pick.
+        """
+        user_word_id = await session.scalar(
+            select(UserWord.id).where(
+                UserWord.user_id == user.id,
+                UserWord.translation_user == translation,
+            )
+        )
+        common_word_id = (
+            None
+            if user_word_id is not None
+            else await session.scalar(
+                select(Word.id).where(Word.translation == translation)
+            )
+        )
+
+        await WordQueries._record_error(
+            session=session,
+            user=user,
+            user_word_id=user_word_id,
+            common_word_id=common_word_id,
+        )
 
     @staticmethod
     async def get_weak_words(
         session: AsyncSession,
         user: User,
         limit: int = 10,
-    ) -> list[UserWord]:
+    ) -> list[dict]:
         """
         Retrieve the user's most error-prone words, sorted by error count.
 
@@ -322,15 +396,152 @@ class WordQueries:
             limit: Maximum number of words to return.
 
         Returns:
-            A list of UserWord instances sorted by error count descending.
+            A list of dicts with 'user_word', 'translation', and 'error_count'.
         """
+        subq = (
+            select(WordError.user_word_id, func.count(WordError.id).label("cnt"))
+            .where(WordError.user_id == user.id, WordError.user_word_id.isnot(None))
+            .group_by(WordError.user_word_id)
+            .subquery()
+        )
+
         result = await session.execute(
-            select(UserWord)
-            .where(UserWord.user_id == user.id, UserWord.errors_count > 0)
-            .order_by(UserWord.errors_count.desc(), UserWord.created_at.desc())
+            select(UserWord, subq.c.cnt)
+            .join(subq, UserWord.id == subq.c.user_word_id)
+            .where(UserWord.user_id == user.id, subq.c.cnt > 0)
+            .order_by(subq.c.cnt.desc(), UserWord.created_at.desc())
             .limit(limit)
         )
-        return list(result.scalars().all())
+
+        return [
+            {
+                "word_user": row[0].word_user,
+                "translation_user": row[0].translation_user,
+                "error_count": row[1],
+            }
+            for row in result.all()
+        ]
+
+    @staticmethod
+    async def get_errors_by_period(
+        session: AsyncSession,
+        user: User,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> dict:
+        """
+        Get error statistics for a given date range.
+
+        Args:
+            session: The active asynchronous SQLAlchemy session.
+            user: The User whose errors should be fetched.
+            start_date: Start of the period (inclusive).
+            end_date: End of the period (inclusive).
+
+        Returns:
+            Dict with 'total_errors', 'daily_errors', 'by_word'.
+        """
+        total = await session.execute(
+            select(func.count(WordError.id)).where(
+                WordError.user_id == user.id,
+                WordError.error_date >= start_date,
+                WordError.error_date < end_date,
+            )
+        )
+        total_errors: int = total.scalar() or 0
+
+        # Fetch raw error dates and group in Python for cross-dialect safety.
+        # SQLAlchemy's func.date() is not available on PostgreSQL.
+        raw_daily = await session.execute(
+            select(WordError.error_date).where(
+                WordError.user_id == user.id,
+                WordError.error_date >= start_date,
+                WordError.error_date < end_date,
+            )
+        )
+        daily_errors: dict[str, int] = {}
+        for row in raw_daily.scalars().all():
+            day_key = row.date().isoformat()
+            daily_errors[day_key] = daily_errors.get(day_key, 0) + 1
+
+        by_word_list: list[dict] = []
+
+        # Errors from user's custom words (user_word_id is set).
+        by_word_result = await session.execute(
+            select(
+                UserWord.word_user,
+                UserWord.translation_user,
+                func.count(WordError.id).label("cnt"),
+            )
+            .join(WordError, UserWord.id == WordError.user_word_id)
+            .where(
+                WordError.user_id == user.id,
+                WordError.error_date >= start_date,
+                WordError.error_date < end_date,
+                WordError.user_word_id.isnot(None),
+            )
+            .group_by(UserWord.id, UserWord.word_user, UserWord.translation_user)
+            .order_by(func.count(WordError.id).desc())
+        )
+        by_word_list.extend(
+            {
+                "word": row.word_user,
+                "translation": row.translation_user,
+                "errors": row.cnt,
+            }
+            for row in by_word_result.all()
+        )
+
+        # Errors from the common dictionary (only common_word_id is set).
+        # This covers mistakes recorded via ``record_error_for_translation``
+        # during the AI quiz, where the user missed an English option.
+        common_word_result = await session.execute(
+            select(
+                Word.word.label("word"),
+                Word.translation.label("translation"),
+                func.count(WordError.id).label("cnt"),
+            )
+            .join(WordError, Word.id == WordError.common_word_id)
+            .where(
+                WordError.user_id == user.id,
+                WordError.error_date >= start_date,
+                WordError.error_date < end_date,
+                WordError.user_word_id.is_(None),
+                WordError.common_word_id.isnot(None),
+            )
+            .group_by(Word.id, Word.word, Word.translation)
+            .order_by(func.count(WordError.id).desc())
+        )
+        by_word_list.extend(
+            {
+                "word": row.word,
+                "translation": row.translation,
+                "errors": row.cnt,
+            }
+            for row in common_word_result.all()
+        )
+
+        by_word_list.sort(key=lambda x: x["errors"], reverse=True)
+
+        return {
+            "total_errors": total_errors,
+            "daily_errors": daily_errors,
+            "by_word": by_word_list,
+        }
+
+    @staticmethod
+    async def get_user_word_id_by_text(
+        session: AsyncSession,
+        user: User,
+        word_user: str,
+    ) -> int | None:
+        """Get the DB id of a UserWord by its text for a given user."""
+        result = await session.execute(
+            select(UserWord.id).where(
+                UserWord.user_id == user.id, UserWord.word_user == word_user
+            )
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     async def populate_common_words(

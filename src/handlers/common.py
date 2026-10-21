@@ -90,11 +90,13 @@ async def help_handler(message: types.Message) -> None:
         message: The incoming Telegram message.
     """
     help_text = (
-        "📚 *Доступные команды:*\n\n"
-        "/start - начать викторину по английским словам\n"
-        "/stop - остановить викторину и сбросить состояние\n"
-        "/help - показать это сообщение с подсказками\n\n"
+        "📚 <b>Доступные команды:</b>\n\n"
+        "<code>/start</code> - начать викторину по английским словам\n"
+        "<code>/quiz_ai</code> - персонализированный AI-квиз на основе ваших слов\n"
+        "<code>/stat</code> - статистика ошибок за выбранный период\n"
+        "<code>/stop</code> - остановить викторину и сбросить состояние\n"
+        "<code>/help</code> - показать это сообщение с подсказками\n\n"
         "Также используйте кнопки для добавления, удаления слов "
         "и перехода к следующему вопросу."
     )
-    await message.answer(help_text, parse_mode="Markdown")
+    await message.answer(help_text, parse_mode="HTML")

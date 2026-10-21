@@ -14,6 +14,26 @@ mcp = FastMCP("EnglishCardBot")
 
 
 @mcp.tool
+async def get_all_words(
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Number of words to return (1-50)"),
+    ] = 20,
+) -> list[dict]:
+    """
+    Get a sample of common dictionary words.
+    Returns a list of dicts with 'word' and 'translation' keys.
+    Useful for generating quizzes with general vocabulary.
+    """
+    async with session_factory() as session:
+        result = await session.execute(
+            select(Word).order_by(func.random()).limit(limit)
+        )
+        words = list(result.scalars().all())
+        return [{"word": w.word, "translation": w.translation} for w in words]
+
+
+@mcp.tool
 async def get_recent_words(
     telegram_id: Annotated[str, Field(description="Telegram user ID (string)")],
     limit: Annotated[
@@ -82,9 +102,9 @@ async def get_weak_words(
         )
         return [
             {
-                "word": w.word_user,
-                "translation": w.translation_user,
-                "error_count": w.errors_count,
+                "word": w["word_user"],
+                "translation": w["translation_user"],
+                "error_count": w["error_count"],
             }
             for w in words
         ]

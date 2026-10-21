@@ -21,3 +21,4 @@ class MyStates(StatesGroup):
     waiting_for_word_to_delete = State()
     waiting_for_quiz_answer = State()
     waiting_for_ai_quiz_answer = State()
+    waiting_for_stat_period_start = State()

@@ -79,10 +79,11 @@ class BotSettings(BaseModel):
 
 class AISettings(BaseModel):
     enabled: bool = True
-    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_base_url: str = "http://localhost:11434"
     ollama_model: str
-    request_timeout_seconds: int = Field(default=30, gt=0)
+    request_timeout_seconds: int = Field(default=60, gt=0)
     prompt_version: str = "tutor_v1"
+    num_ctx: int = 4096
 
 
 class Settings(BaseSettings):

@@ -33,10 +33,13 @@ services:
       DB__POSTGRES_PORT: "5432"
       BOT__PROXY: ""
       AI__ENABLED: ${AI__ENABLED:-true}
-      AI__OLLAMA_BASE_URL: http://ollama:11434/v1
+      # Native Ollama base URL (no /v1): the bot talks to /api/chat, which is
+      # the only endpoint that honours "think": false for reasoning models.
+      AI__OLLAMA_BASE_URL: http://ollama:11434
       AI__OLLAMA_MODEL: ${AI__OLLAMA_MODEL:-qwen3:8b}
-      AI__REQUEST_TIMEOUT_SECONDS: ${AI__REQUEST_TIMEOUT_SECONDS:-30}
+      AI__REQUEST_TIMEOUT_SECONDS: ${AI__REQUEST_TIMEOUT_SECONDS:-60}
       AI__PROMPT_VERSION: ${AI__PROMPT_VERSION:-tutor_v1}
+      AI__NUM_CTX: ${AI__NUM_CTX:-4096}
     depends_on:
       db:
         condition: service_healthy

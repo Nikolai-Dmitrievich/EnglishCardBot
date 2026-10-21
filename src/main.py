@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.core.config import settings
 from src.core.database import DatabaseMiddleware, session_factory
 from src.db.queries import TECH_WORDS_DATA, WordQueries
-from src.handlers import ai_quiz, common, quiz, words
+from src.handlers import ai_quiz, common, quiz, stat, words
 from src.mcp.tools import mcp
 
 logging.basicConfig(
@@ -71,6 +71,10 @@ async def main() -> None:
     dp.callback_query.middleware(DatabaseMiddleware(session_factory))
 
     dp.include_router(common.router)
+    # Registered ahead of the quiz routers: quiz.router binds a catch-all
+    # StateFilter(waiting_for_quiz_answer) to plain text, which would otherwise
+    # swallow /stat while a quiz question is pending.
+    dp.include_router(stat.router)
     # Registered before quiz.router: its StateFilter(waiting_for_quiz_answer)
     # matches any text, so it would otherwise swallow /quiz_ai while a quiz
     # question is pending.

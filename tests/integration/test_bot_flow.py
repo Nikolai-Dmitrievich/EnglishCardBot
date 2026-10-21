@@ -12,7 +12,7 @@ from aiogram.fsm.storage.base import StorageKey
 from sqlalchemy import func, select
 
 from src.db.models import User, UserWord
-from src.handlers.quiz import CommandText
+from src.handlers.quiz import QUIZ_LENGTH, CommandText
 from tests.conftest import TEST_USER_ID
 
 QUIZ_STATE = "MyStates:waiting_for_quiz_answer"
@@ -43,9 +43,10 @@ class TestStart:
 
         keyboard = client.keyboard
         service_buttons = {
-            CommandText.NEXT,
-            CommandText.ADD_WORD,
-            CommandText.DELETE_WORD,
+            "📊 Результаты",
+            "Пропустить ⏭",
+            "➕ Слово",
+            "🗑 Слово",
         }
         options = set(keyboard) - service_buttons
 
@@ -116,7 +117,17 @@ class TestQuizAnswer:
 
         assert "Неправильно!" in client.last_text
         assert f"{wrong} ❌" in client.keyboard
-        assert await fsm_state["data"]() == data
+        new_data = await fsm_state["data"]()
+        # State should be updated: wrong answer increments incorrect_count.
+        # question_number stays the same because send_quiz (which increments
+        # it) is called *after* the keyboard is rebuilt.
+        assert new_data["incorrect_count"] == data["incorrect_count"] + 1
+        assert new_data["question_number"] == data["question_number"]
+        # answered_indices is always reset to [] — send_quiz owns the counter.
+        assert new_data["answered_indices"] == []
+        # But the quiz is still active (state not cleared)
+        assert new_data["target_word"] == data["target_word"]
+        assert new_data["correct_index"] == data["correct_index"]
 
     async def test_wrong_answer_does_not_change_state(
         self, client: Any, common_words: Any, fsm_state: Any
@@ -351,6 +362,86 @@ class TestDeleteWord:
         assert await session.scalar(select(func.count()).select_from(UserWord)) == 1
 
 
+class TestQuizRestart:
+    """Regression tests for the results screen and its «Начать заново» button.
+
+    The results screen is sent right after ``state.clear()``, so its buttons
+    are tapped with an empty FSM. Handlers bound to
+    ``waiting_for_quiz_answer`` never observe them — these tests pin down
+    that the taps are still routed and start a fresh quiz.
+    """
+
+    async def _finish_quiz(self, client: Any, fsm_state: Any) -> None:
+        """Answer every question correctly so the results screen is shown."""
+        for _ in range(QUIZ_LENGTH):
+            data = await fsm_state["data"]()
+            await client.tap(f"ans:{data['correct_index']}")
+
+    async def test_quiz_ends_with_results_screen(
+        self, client: Any, common_words: Any, fsm_state: Any
+    ) -> None:
+        await client.send("/start")
+        await self._finish_quiz(client, fsm_state)
+
+        assert "Квиз завершён" in client.last_text
+        assert "🔄 Начать заново" in client.keyboard
+        assert await fsm_state["state"]() is None
+
+    async def test_restart_button_starts_new_quiz(
+        self, client: Any, common_words: Any, fsm_state: Any
+    ) -> None:
+        await client.send("/start")
+        await self._finish_quiz(client, fsm_state)
+        client.clear()
+
+        await client.tap("next:restart")
+
+        assert "Выбери правильный перевод слова:" in client.last_text
+        assert "Вопрос 1/10" in client.last_text
+        assert await fsm_state["state"]() == QUIZ_STATE
+
+    async def test_restart_resets_progress_counters(
+        self, client: Any, common_words: Any, fsm_state: Any
+    ) -> None:
+        await client.send("/start")
+        await self._finish_quiz(client, fsm_state)
+
+        await client.tap("next:restart")
+
+        data = await fsm_state["data"]()
+        assert data["question_number"] == 1
+        assert data["correct_count"] == 0
+        assert data["incorrect_count"] == 0
+
+    async def test_restart_is_repeatable(
+        self, client: Any, common_words: Any, fsm_state: Any
+    ) -> None:
+        """A restarted quiz must reach its results screen again."""
+        await client.send("/start")
+        await self._finish_quiz(client, fsm_state)
+
+        await client.tap("next:restart")
+        await self._finish_quiz(client, fsm_state)
+
+        assert "Квиз завершён" in client.last_text
+        assert await fsm_state["state"]() is None
+
+    async def test_delete_word_button_works_on_results_screen(
+        self, client: Any, common_words: Any, fsm_state: Any
+    ) -> None:
+        await client.send("/start")
+        await client.send(CommandText.ADD_WORD)
+        await client.send("массив")
+        await client.send("array")
+        await self._finish_quiz(client, fsm_state)
+        client.clear()
+
+        await client.tap("delete_word")
+
+        assert "Выберите слово для удаления" in client.last_text
+        assert await fsm_state["state"]() == DELETE_STATE
+
+
 class TestCommonCommands:
     """Tests for /stop, /help, and unhandled message scenarios."""
 
@@ -367,7 +458,7 @@ class TestCommonCommands:
     async def test_help_lists_commands(self, client: Any) -> None:
         await client.send("/help")
 
-        for command in ("/start", "/stop", "/help"):
+        for command in ("/start", "/quiz_ai", "/stat", "/stop", "/help"):
             assert command in client.last_text
 
     async def test_message_without_state_and_command_is_unhandled(

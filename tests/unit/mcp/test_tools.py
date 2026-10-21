@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import UserWord
+from src.db.models import UserWord, WordError
 from src.db.queries import UserQueries
 from src.mcp.tools import get_recent_words, get_user_stats, get_weak_words
 
@@ -154,28 +154,28 @@ class TestGetWeakWords:
         user = await UserQueries.create_user(session, "100", "TestUser")
         await session.flush()
 
-        session.add_all(
-            [
-                UserWord(
-                    user_id=user.id,
-                    word_user="word_a",
-                    translation_user="a",
-                    errors_count=1,
-                ),
-                UserWord(
-                    user_id=user.id,
-                    word_user="word_b",
-                    translation_user="b",
-                    errors_count=5,
-                ),
-                UserWord(
-                    user_id=user.id,
-                    word_user="word_c",
-                    translation_user="c",
-                    errors_count=3,
-                ),
-            ]
-        )
+        words_data = [
+            ("word_a", "a", 1),
+            ("word_b", "b", 5),
+            ("word_c", "c", 3),
+        ]
+        for word_user, translation, error_count in words_data:
+            uw = UserWord(
+                user_id=user.id,
+                word_user=word_user,
+                translation_user=translation,
+            )
+            session.add(uw)
+            await session.flush()
+
+            for _ in range(error_count):
+                session.add(
+                    WordError(
+                        user_id=user.id,
+                        user_word_id=uw.id,
+                        error_date=datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC),
+                    )
+                )
         await session.commit()
 
         result = await get_weak_words(telegram_id="100", limit=5)
@@ -193,12 +193,19 @@ class TestGetWeakWords:
         await session.flush()
 
         for i in range(5):
+            uw = UserWord(
+                user_id=user.id,
+                word_user=f"word{i}",
+                translation_user=f"trans{i}",
+            )
+            session.add(uw)
+            await session.flush()
+
             session.add(
-                UserWord(
+                WordError(
                     user_id=user.id,
-                    word_user=f"word{i}",
-                    translation_user=f"trans{i}",
-                    errors_count=i + 1,
+                    user_word_id=uw.id,
+                    error_date=datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC),
                 )
             )
         await session.commit()
@@ -206,8 +213,8 @@ class TestGetWeakWords:
         result = await get_weak_words(telegram_id="100", limit=2)
 
         assert len(result) == 2
-        assert result[0]["error_count"] == 5
-        assert result[1]["error_count"] == 4
+        assert result[0]["error_count"] == 1
+        assert result[1]["error_count"] == 1
 
     async def test_returns_word_and_translation(
         self, session: AsyncSession, patched_session_factory
@@ -216,14 +223,22 @@ class TestGetWeakWords:
         user = await UserQueries.create_user(session, "100", "TestUser")
         await session.flush()
 
-        session.add(
-            UserWord(
-                user_id=user.id,
-                word_user="test_word",
-                translation_user="test_translation",
-                errors_count=2,
-            )
+        uw = UserWord(
+            user_id=user.id,
+            word_user="test_word",
+            translation_user="test_translation",
         )
+        session.add(uw)
+        await session.flush()
+
+        for _ in range(2):
+            session.add(
+                WordError(
+                    user_id=user.id,
+                    user_word_id=uw.id,
+                    error_date=datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC),
+                )
+            )
         await session.commit()
 
         result = await get_weak_words(telegram_id="100", limit=5)
