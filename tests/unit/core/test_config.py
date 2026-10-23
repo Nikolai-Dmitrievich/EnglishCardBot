@@ -6,13 +6,13 @@ variables, handle Docker-style overrides, validate required fields, and
 enforce the correct priority between process environment variables and .env files.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from src.core.config import Settings
+from src.core.config import Settings, get_settings
 
 BASE_ENV = {
     "BOT__TOKEN": "42:TOKEN",
@@ -51,6 +51,35 @@ def env(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Settings]:
         return Settings(_env_file=None)
 
     return _env
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache() -> Generator[None]:
+    """Reset the lazy-settings singleton between tests."""
+    import src.core.config as config_mod
+
+    original = config_mod._settings
+    config_mod._settings = None
+    yield
+    config_mod._settings = original
+
+
+class TestGetSettings:
+    """Tests for the lazy ``get_settings()`` accessor."""
+
+    def test_returns_instance(self, env: Callable[..., Settings]) -> None:
+        """Verify that ``get_settings`` returns a valid ``Settings`` object."""
+        settings = get_settings()
+
+        assert isinstance(settings, Settings)
+        assert settings.db.postgres_host == "localhost"
+
+    def test_returns_cached_instance(self, env: Callable[..., Settings]) -> None:
+        """Verify that repeated calls return the same instance."""
+        first = get_settings()
+        second = get_settings()
+
+        assert first is second
 
 
 class TestDatabaseUrl:

@@ -29,7 +29,7 @@ from src.ai.client import LLMUnavailableError, llm_client
 from src.ai.prompts import TUTOR_PROMPT_V2
 from src.ai.schemas import LLMInvalidOutputError, QuizResponse
 from src.ai.utils import extract_tool_data, validate_quiz
-from src.core.config import settings
+from src.core.config import get_settings
 from src.db.models import User
 from src.db.queries import WordQueries
 from src.mcp.tools import mcp
@@ -300,7 +300,7 @@ async def _generate_and_send_quiz(
                     {"role": "user", "content": final_prompt},
                 ],
                 format_schema=QuizResponse.model_json_schema(),
-                timeout=settings.ai.request_timeout_seconds,
+                timeout=get_settings().ai.request_timeout_seconds,
             )
 
             parsed = QuizResponse.model_validate_json(content)
@@ -364,7 +364,7 @@ async def start_ai_quiz(message: Message, state: FSMContext) -> Message | None:
     guard is about user-typed prompts. A menu tap has no text at all, so it
     enters through here and skips straight to generation.
     """
-    if not settings.ai.enabled:
+    if not get_settings().ai.enabled:
         return await _send_fallback_quiz(message, "AI отключен в настройках")
 
     return await _generate_and_send_quiz(message, state)
@@ -372,7 +372,7 @@ async def start_ai_quiz(message: Message, state: FSMContext) -> Message | None:
 
 @router.message(Command("quiz_ai"))
 async def handle_quiz_ai(message: Message, state: FSMContext) -> Message | None:
-    if not settings.ai.enabled:
+    if not get_settings().ai.enabled:
         return await _send_fallback_quiz(message, "AI отключен в настройках")
 
     if message.text is None or len(message.text) > 500:

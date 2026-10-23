@@ -2,7 +2,7 @@ import logging
 
 import httpx
 
-from src.core.config import settings
+from src.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,18 @@ class OllamaClient:
     """
 
     def __init__(self):
-        self._base_url = settings.ai.ollama_base_url.rstrip("/")
-        self._model = settings.ai.ollama_model
         self._http = httpx.AsyncClient(trust_env=False, timeout=30)
+
+    # Settings are read per request rather than in __init__ so that importing
+    # this module (and the module-level client below) never requires a valid
+    # configuration.
+    @property
+    def _base_url(self) -> str:
+        return get_settings().ai.ollama_base_url.rstrip("/")
+
+    @property
+    def _model(self) -> str:
+        return get_settings().ai.ollama_model
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -59,7 +68,7 @@ class OllamaClient:
                     "messages": messages,
                     "stream": False,
                     "think": False,
-                    "options": {"num_ctx": settings.ai.num_ctx},
+                    "options": {"num_ctx": get_settings().ai.num_ctx},
                 }
                 if format_schema is not None:
                     payload["format"] = format_schema
@@ -119,4 +128,15 @@ class OllamaClient:
         return await self.complete(messages, timeout, format_schema=format_schema)
 
 
-llm_client = OllamaClient()
+_llm_client: OllamaClient | None = None
+
+
+def get_llm_client() -> OllamaClient:
+    """Return the cached ``OllamaClient`` instance, creating it on first use."""
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = OllamaClient()
+    return _llm_client
+
+
+llm_client = get_llm_client()

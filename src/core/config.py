@@ -107,4 +107,21 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """
+    Lazily initialise and return the global ``Settings`` instance.
+
+    On first call the settings are loaded from environment variables / ``.env``
+    file.  Subsequent calls return the cached instance.
+
+    Raises:
+        pydantic.ValidationError: If required environment variables are missing
+            or contain invalid values.
+    """
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings

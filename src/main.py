@@ -12,10 +12,11 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.core.config import settings
-from src.core.database import DatabaseMiddleware, session_factory
+from src.core.config import get_settings
+from src.core.database import DatabaseMiddleware, get_session_factory, session_factory
 from src.db.queries import TECH_WORDS_DATA, WordQueries
 from src.handlers import ai_quiz, common, quiz, stat, words
 from src.mcp.tools import mcp
@@ -55,7 +56,9 @@ async def main() -> None:
     and routers. It also triggers the initial database seeding before
     starting the polling loop.
     """
-    proxy_url = getattr(settings.bot, "proxy", None)
+    cfg = get_settings()
+
+    proxy_url = cfg.bot.proxy
 
     if proxy_url:
         session = AiohttpSession(proxy=proxy_url)
@@ -63,12 +66,12 @@ async def main() -> None:
     else:
         session = AiohttpSession()
 
-    bot = Bot(token=settings.bot.token.get_secret_value(), session=session)
+    bot = Bot(token=cfg.bot.token.get_secret_value(), session=session)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    dp.message.middleware(DatabaseMiddleware(session_factory))
-    dp.callback_query.middleware(DatabaseMiddleware(session_factory))
+    dp.message.middleware(DatabaseMiddleware(get_session_factory()))
+    dp.callback_query.middleware(DatabaseMiddleware(get_session_factory()))
 
     dp.include_router(common.router)
     # Registered ahead of the quiz routers: quiz.router binds a catch-all
@@ -109,7 +112,29 @@ def run_mcp_server() -> None:
     mcp.run(transport="stdio")
 
 
+def load_config_or_exit() -> None:
+    """
+    Validate the configuration up front and report problems readably.
+
+    Settings are resolved lazily, so without this check a missing or broken
+    ``.env`` would surface as a raw ``ValidationError`` traceback from deep
+    inside the database or LLM client. Listing every offending field tells the
+    operator exactly which variable to fix.
+    """
+    try:
+        get_settings()
+    except ValidationError as exc:
+        logger.error("Configuration is invalid, fix the following settings:")
+        for err in exc.errors():
+            location = ".".join(str(part) for part in err["loc"]) or "<root>"
+            logger.error("  - %s: %s", location, err["msg"])
+        logger.error("Hint: copy .env.example to .env and fill in the values.")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
+    load_config_or_exit()
+
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":
         run_mcp_server()
     else:
