@@ -77,12 +77,15 @@ async def main() -> None:
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    # A single factory is shared by the middlewares and the seeding below:
+    # A single factory is shared by the middleware and the seeding below:
     # both then run on one engine with identical pooling and timeout settings.
     session_pool = get_session_factory()
 
-    dp.message.middleware(DatabaseMiddleware(session_pool))
-    dp.callback_query.middleware(DatabaseMiddleware(session_pool))
+    # One stateless middleware instance serves both observers: it only holds
+    # the factory, so duplicating it would add nothing but a second object.
+    db_middleware = DatabaseMiddleware(session_pool)
+    dp.message.middleware(db_middleware)
+    dp.callback_query.middleware(db_middleware)
 
     dp.include_router(common.router)
     # Registered ahead of the quiz routers: quiz.router binds a catch-all
