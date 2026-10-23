@@ -14,9 +14,10 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.config import get_settings
-from src.core.database import DatabaseMiddleware, get_session_factory, session_factory
+from src.core.database import DatabaseMiddleware, get_session_factory
 from src.db.queries import TECH_WORDS_DATA, WordQueries
 from src.handlers import ai_quiz, common, quiz, stat, words
 from src.mcp.tools import mcp
@@ -28,16 +29,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def seed_initial_words() -> int:
+async def seed_initial_words(
+    session_pool: async_sessionmaker[AsyncSession],
+) -> int:
     """
-    Populate the common dictionary with initial words on bot startup.
+    Populate the common dictionary with initial word pairs on bot startup.
 
     This operation is idempotent and will not add duplicate entries.
+
+    Args:
+        session_pool: The same session factory the request middlewares use,
+            so seeding shares the engine and pooling configuration.
 
     Returns:
         int: The number of newly added words.
     """
-    async with session_factory() as session:
+    async with session_pool() as session:
         try:
             count = await WordQueries.populate_common_words(session, TECH_WORDS_DATA)
             await session.commit()
@@ -70,8 +77,12 @@ async def main() -> None:
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    dp.message.middleware(DatabaseMiddleware(get_session_factory()))
-    dp.callback_query.middleware(DatabaseMiddleware(get_session_factory()))
+    # A single factory is shared by the middlewares and the seeding below:
+    # both then run on one engine with identical pooling and timeout settings.
+    session_pool = get_session_factory()
+
+    dp.message.middleware(DatabaseMiddleware(session_pool))
+    dp.callback_query.middleware(DatabaseMiddleware(session_pool))
 
     dp.include_router(common.router)
     # Registered ahead of the quiz routers: quiz.router binds a catch-all
@@ -85,7 +96,7 @@ async def main() -> None:
     dp.include_router(quiz.router)
     dp.include_router(words.router)
 
-    added_count = await seed_initial_words()
+    added_count = await seed_initial_words(session_pool)
     if added_count > 0:
         logger.info("Added %d new words to the common dictionary", added_count)
     else:
