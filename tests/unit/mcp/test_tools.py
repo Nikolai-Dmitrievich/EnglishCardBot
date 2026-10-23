@@ -7,14 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import UserWord, WordError
 from src.db.queries import UserQueries
-from src.mcp.tools import get_recent_words, get_user_stats, get_weak_words
+from src.mcp.tools import (
+    configure_session_pool,
+    get_recent_words,
+    get_user_stats,
+    get_weak_words,
+)
 
 
 @pytest.fixture
-def patched_session_factory(session_factory, monkeypatch: pytest.MonkeyPatch):
-    """Replace the global session_factory in mcp.tools with the test DB."""
-    monkeypatch.setattr("src.mcp.tools.session_factory", session_factory)
-    return session_factory
+def patched_session_factory(session_factory):
+    """Point the MCP tools at the in-memory test database."""
+    configure_session_pool(session_factory)
+    yield session_factory
+    configure_session_pool(None)
 
 
 class TestGetRecentWords:

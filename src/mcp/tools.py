@@ -5,12 +5,39 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.core.database import session_factory
+from src.core.database import get_session_factory
 from src.db.models import UserWord, Word
 from src.db.queries import UserQueries, WordQueries
 
 mcp = FastMCP("EnglishCardBot")
+
+# The MCP server is a second entry point of this same application, so its
+# tools must read the very database the bot writes to: a quiz built from
+# another dataset would ignore the user's error history. The pool is still
+# kept injectable rather than imported as a ready-made global, so tests can
+# point the tools at their own database without patching module attributes.
+_session_pool: async_sessionmaker[AsyncSession] | None = None
+
+
+def configure_session_pool(
+    session_pool: async_sessionmaker[AsyncSession] | None,
+) -> None:
+    """
+    Override the session pool used by the tools, or reset it with ``None``.
+
+    Passing ``None`` restores the application pool, which is resolved lazily
+    from the current settings.
+    """
+    global _session_pool
+    _session_pool = session_pool
+
+
+def session_factory() -> AsyncSession:
+    """Open a session from the active pool."""
+    pool = _session_pool if _session_pool is not None else get_session_factory()
+    return pool()
 
 
 @mcp.tool

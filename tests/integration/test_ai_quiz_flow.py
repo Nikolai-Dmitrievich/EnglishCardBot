@@ -6,6 +6,7 @@ Ollama or PostgreSQL.
 """
 
 import json
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,6 +18,7 @@ from src.db.queries import UserQueries, WordQueries
 from src.handlers.common import ADD_WORD_DATA as MENU_ADD_WORD
 from src.handlers.common import START_AI_QUIZ_DATA as MENU_AI_QUIZ
 from src.handlers.common import START_QUIZ_DATA as MENU_QUIZ
+from src.mcp.tools import configure_session_pool
 from tests.conftest import TEST_USER_ID
 
 AI_QUIZ_STATE = "MyStates:waiting_for_ai_quiz_answer"
@@ -110,12 +112,12 @@ def stubbed_llm_sequence(
 @pytest.fixture
 def ai_quiz_env(
     session_factory: Any,
-    monkeypatch: pytest.MonkeyPatch,
     common_words: list[tuple[str, str]],
-) -> list[tuple[str, str]]:
+) -> Generator[list[tuple[str, str]]]:
     """Point the MCP tools at the in-memory test database."""
-    monkeypatch.setattr("src.mcp.tools.session_factory", session_factory)
-    return common_words
+    configure_session_pool(session_factory)
+    yield common_words
+    configure_session_pool(None)
 
 
 class TestAIQuizGeneration:
