@@ -6,6 +6,7 @@ on users, words, and user-specific translations using SQLAlchemy 2.0
 asynchronous sessions.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, cast
 
@@ -200,6 +201,7 @@ class WordQueries:
     async def get_random_word_for_user(
         session: AsyncSession,
         user: User,
+        exclude_words: Sequence[str] = (),
     ) -> tuple[str | None, str | None, bool]:
         """
         Fetch a random word for the user's training session.
@@ -211,6 +213,10 @@ class WordQueries:
         Args:
             session: The active asynchronous SQLAlchemy session.
             user: The User for whom the word is selected.
+            exclude_words: Headwords already shown in the current quiz, so
+                a round does not repeat a word while unseen ones remain.
+                ``send_quiz`` passes an empty list once the pool is exhausted
+                — that is the signal that repeats become unavoidable.
 
         Returns:
             A tuple of (word, translation, is_user_word). Returns
@@ -230,6 +236,12 @@ class WordQueries:
             Word.translation.label("translation"),
             false().label("is_user_word"),
         )
+
+        # Filtering both branches (rather than the union) keeps the predicate
+        # on the indexed headword columns instead of a derived table.
+        if exclude_words:
+            user_words_q = user_words_q.where(UserWord.word_user.not_in(exclude_words))
+            common_words_q = common_words_q.where(Word.word.not_in(exclude_words))
 
         combined_q = user_words_q.union_all(common_words_q).subquery()
         stmt = select(combined_q).order_by(func.random()).limit(1)

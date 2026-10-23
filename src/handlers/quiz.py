@@ -30,21 +30,36 @@ QUIZ_LENGTH = 10
 # Callback data prefixes
 ANSWER_PREFIX = "ans:"
 NEXT_PREFIX = "next:"
-RESULTS_PREFIX = "results:"
 # Marks buttons on an already-answered question as inert: tapping them again
 # must not be counted against the *next* question's options.
 DISABLED_PREFIX = "noop:"
-ADD_WORD_DATA = "add_word"
-DELETE_WORD_DATA = "delete_word"
+# Inline counterpart of the /stop command: tapping it must end the session
+# without the user having to type the command.
+STOP_QUIZ_DATA = "stop_quiz"
+
+# Hard cap of ``AnswerCallbackQuery.text`` enforced by the Telegram Bot API.
+MAX_ALERT_TEXT_LENGTH = 200
+
+
+async def _pick_question_word(
+    session: AsyncSession,
+    user: User,
+    exclude_words: list[str],
+) -> tuple[str | None, str | None]:
+    """Return one random (word, translation) pair, excluding already-asked words."""
+    result = await WordQueries.get_random_word_for_user(
+        session=session,
+        user=user,
+        exclude_words=exclude_words,
+    )
+    return result[0], result[1]
 
 
 class CommandText:
     """Container for the text labels used on the quiz keyboard buttons."""
 
-    ADD_WORD = "Добавить слово ➕"
-    DELETE_WORD = "Удалить слово 🔙"
     NEXT = "Дальше ⏭"
-    CANCEL = "Отмена"
+    STOP = "⏹ Стоп"
 
 
 async def _build_quiz_keyboard(
@@ -52,7 +67,6 @@ async def _build_quiz_keyboard(
     correct_translation: str,
     answered: set[int],
     correct_index: int,
-    is_complete: bool = False,
     lock_options: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build an inline keyboard for a quiz question.
@@ -62,7 +76,6 @@ async def _build_quiz_keyboard(
         correct_translation: The correct answer text.
         answered: Set of indices already answered (shown with ✅/❌).
         correct_index: Index of the correct answer.
-        is_complete: If True, show correct/incorrect markers for all options.
         lock_options: If True, every option becomes inert. Telegram keeps the
             keyboard of an edited message clickable, so once a question is
             answered all its options must stop pointing at ``ans:<idx>`` —
@@ -72,15 +85,13 @@ async def _build_quiz_keyboard(
     keyboard: list[list[InlineKeyboardButton]] = []
 
     for idx, opt in enumerate(options):
-        if is_complete:
-            if idx == correct_index:
-                text = f"{opt} ✅"
-            elif idx in answered:
-                text = f"{opt} ❌"
-            else:
-                text = opt
-        elif idx in answered:
-            text = f"{opt} ❌"
+        # Only tapped options get marked, and the mark has to reflect whether
+        # the pick was right: marking every answered index with ❌ made a
+        # correct choice look like a mistake. The correct option is never
+        # highlighted before it is actually chosen, otherwise the keyboard
+        # would give the answer away.
+        if idx in answered:
+            text = f"{opt} ✅" if idx == correct_index else f"{opt} ❌"
         else:
             text = opt
 
@@ -89,27 +100,19 @@ async def _build_quiz_keyboard(
             [InlineKeyboardButton(text=text, callback_data=f"{prefix}{idx}")]
         )
 
-    # Navigation row
-    nav_buttons = [
-        InlineKeyboardButton(
-            text="📊 Результаты",
-            callback_data=f"{RESULTS_PREFIX}show",
-        ),
-    ]
-    if not is_complete:
-        nav_buttons.append(
+    # Navigation row: skip the current question or end the session entirely.
+    # Word management lives in the /start and /help menus now — keeping it on
+    # every question crowded the keyboard for no benefit.
+    keyboard.append(
+        [
             InlineKeyboardButton(
                 text="Пропустить ⏭",
                 callback_data=f"{NEXT_PREFIX}skip",
-            )
-        )
-    keyboard.append(nav_buttons)
-
-    # Bottom row: add/delete word
-    keyboard.append(
-        [
-            InlineKeyboardButton(text="➕ Слово", callback_data=ADD_WORD_DATA),
-            InlineKeyboardButton(text="🗑 Слово", callback_data=DELETE_WORD_DATA),
+            ),
+            InlineKeyboardButton(
+                text=CommandText.STOP,
+                callback_data=STOP_QUIZ_DATA,
+            ),
         ]
     )
 
@@ -135,14 +138,40 @@ async def send_quiz(
         user: The User instance for whom the quiz is generated.
         state: The FSM context used to persist quiz data between messages.
     """
-    word, correct_translation, _ = await WordQueries.get_random_word_for_user(
+    # Get current quiz progress. question_number is owned exclusively by this
+    # function: answer handlers only update the counters, so a question is
+    # never counted twice.
+    data = await state.get_data()
+    question_number = data.get("question_number", 0) + 1
+    correct_count = data.get("correct_count", 0)
+    incorrect_count = data.get("incorrect_count", 0)
+
+    # Words already asked in this session. Repeating a word the user just saw
+    # teaches nothing, so the pool shrinks question by question; once it runs
+    # dry it is reset, which is the only way to reach QUIZ_LENGTH with a small
+    # dictionary.
+    used_words: list[str] = list(data.get("used_words", []))
+    previous_word = data.get("target_word")
+    if previous_word is not None:
+        used_words.append(previous_word)
+
+    word, correct_translation = await _pick_question_word(
         session=session,
         user=user,
+        exclude_words=used_words,
     )
 
     if word is None or correct_translation is None:
-        await message.answer("В базе нет слов для викторины. Добавьте новые слова.")
-        return
+        # Every known word was already asked this session — start a new cycle.
+        used_words = []
+        word, correct_translation = await _pick_question_word(
+            session=session,
+            user=user,
+            exclude_words=[],
+        )
+        if word is None or correct_translation is None:
+            await message.answer("В базе нет слов для викторины. Добавьте новые слова.")
+            return
 
     wrong_translations = await WordQueries.get_wrong_translations(
         session=session,
@@ -156,14 +185,6 @@ async def send_quiz(
 
     # Find the index of the correct answer after shuffling
     correct_index = options.index(correct_translation)
-
-    # Get current quiz progress. question_number is owned exclusively by this
-    # function: answer handlers only update the counters, so a question is
-    # never counted twice.
-    data = await state.get_data()
-    question_number = data.get("question_number", 0) + 1
-    correct_count = data.get("correct_count", 0)
-    incorrect_count = data.get("incorrect_count", 0)
 
     keyboard = await _build_quiz_keyboard(
         options=options,
@@ -191,6 +212,7 @@ async def send_quiz(
         correct_count=correct_count,
         incorrect_count=incorrect_count,
         answered_indices=[],
+        used_words=used_words,
     )
 
 
@@ -226,35 +248,6 @@ async def quiz_restart_handler(
     )
 
 
-@router.callback_query(StateFilter(None), F.data == DELETE_WORD_DATA)
-async def results_delete_word_handler(
-    callback: CallbackQuery,
-    session: AsyncSession,
-    user: User,
-    state: FSMContext,
-) -> None:
-    """Handle «🗑 Слово» tapped on the results screen.
-
-    Same reason as ``quiz_restart_handler``: the results-screen keyboard is
-    reachable only with an empty state, so word management needs its own
-    stateless entry point there.
-    """
-    from src.handlers.words import start_delete_word
-
-    message = callback.message
-    if not isinstance(message, types.Message):
-        await callback.answer()
-        return
-
-    await start_delete_word(
-        message=message,
-        session=session,
-        user=user,
-        state=state,
-    )
-    await callback.answer()
-
-
 @router.callback_query(StateFilter(MyStates.waiting_for_quiz_answer))
 async def quiz_callback_handler(
     callback: CallbackQuery,
@@ -265,8 +258,9 @@ async def quiz_callback_handler(
     """
     Process inline button callbacks during an active quiz session.
 
-    Handles answer selection, skipping questions, showing results,
-    and navigating to word management.
+    Handles answer selection, skipping questions and stopping the session.
+    Word management lives in the /start and /help menu instead: keeping it off
+    the question keyboard leaves room for the answers themselves.
 
     Args:
         callback: The incoming callback query.
@@ -278,53 +272,19 @@ async def quiz_callback_handler(
     callback_data = callback.data or ""
     message = callback.message
 
-    # Word management callbacks
-    if callback_data == ADD_WORD_DATA:
-        from src.handlers.words import start_add_word
+    # Stop callback — the inline twin of /stop, so both paths must produce
+    # the very same reply.
+    if callback_data == STOP_QUIZ_DATA:
+        from src.handlers.common import stop_handler
 
-        if isinstance(message, types.Message):
-            await start_add_word(message=message, state=state)
         await callback.answer()
-        return
-
-    if callback_data == DELETE_WORD_DATA:
-        from src.handlers.words import start_delete_word
-
+        # The keyboard of an edited message stays clickable, and once the
+        # state is cleared none of these buttons can be served any more.
         if isinstance(message, types.Message):
-            await start_delete_word(
-                message=message,
-                session=session,
-                user=user,
-                state=state,
-            )
-        await callback.answer()
-        return
-
-    # Results callback
-    if callback_data.startswith(RESULTS_PREFIX):
-        correct_count = data.get("correct_count", 0)
-        incorrect_count = data.get("incorrect_count", 0)
-        total = correct_count + incorrect_count
-
-        if total == 0:
-            await callback.answer("Вы ещё не ответили ни на один вопрос.")
-            return
-
-        accuracy = round((correct_count / total) * 100) if total > 0 else 0
-
-        if accuracy >= 90:
-            emoji = "🏆"
-        elif accuracy >= 70:
-            emoji = "👍"
-        elif accuracy >= 50:
-            emoji = "🤔"
+            await message.edit_reply_markup(reply_markup=None)
+            await stop_handler(message=message, state=state)
         else:
-            emoji = "📚"
-
-        await callback.answer(
-            f"{emoji} {correct_count}/{total} верно",
-            show_alert=True,
-        )
+            await state.clear()
         return
 
     # Next/skip callback. «restart» never reaches this handler: the results
@@ -401,7 +361,15 @@ async def _handle_answer(
             user=user,
             word=target_word,
         )
-        await callback.answer("Неверно ❌", show_alert=True)
+        # The alert is the only place a miss is explained: the keyboard merely
+        # marks options ✅/❌, so naming the right one here is what teaches.
+        # Trimmed to Telegram's 200-char limit for callback answers.
+        await callback.answer(
+            f"Неверно ❌ Правильный ответ: {options[correct_index]}"[
+                :MAX_ALERT_TEXT_LENGTH
+            ],
+            show_alert=True,
+        )
 
     # question_number is the number of the question currently on screen, so
     # the quiz ends once the last one is answered. send_quiz owns the counter.
@@ -437,12 +405,6 @@ async def _handle_answer(
                         text="🔄 Начать заново",
                         callback_data=f"{NEXT_PREFIX}restart",
                     )
-                ],
-                [
-                    InlineKeyboardButton(text="➕ Слово", callback_data=ADD_WORD_DATA),
-                    InlineKeyboardButton(
-                        text="🗑 Слово", callback_data=DELETE_WORD_DATA
-                    ),
                 ],
             ]
         )
@@ -512,23 +474,6 @@ async def quiz_answer_handler(
 
     if text == CommandText.NEXT:
         await send_quiz(
-            message=message,
-            session=session,
-            user=user,
-            state=state,
-        )
-        return
-
-    if text == CommandText.ADD_WORD:
-        from src.handlers.words import start_add_word
-
-        await start_add_word(message=message, state=state)
-        return
-
-    if text == CommandText.DELETE_WORD:
-        from src.handlers.words import start_delete_word
-
-        await start_delete_word(
             message=message,
             session=session,
             user=user,

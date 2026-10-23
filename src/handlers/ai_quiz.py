@@ -35,6 +35,11 @@ from src.db.queries import WordQueries
 from src.mcp.tools import mcp
 from src.states import MyStates
 
+# Deliberately the same payload as the plain quiz's stop button: both flows
+# end the session the same way, and the handlers are kept apart by their
+# StateFilters rather than by distinct payloads.
+STOP_QUIZ_DATA = "stop_quiz"
+
 logger = logging.getLogger(__name__)
 router = Router()
 
@@ -55,6 +60,7 @@ ADD_WORD_DATA = "add_word"
 
 SHOW_ANSWER_BUTTON = "✅ Показать ответ"
 NEXT_QUESTION_BUTTON = "Пропустить ⏭"
+STOP_QUIZ_BUTTON = "⏹ Стоп"
 NEW_QUIZ_BUTTON = "🔄 Новый квиз"
 ADD_WORD_BUTTON = "📝 Добавить слово"
 
@@ -106,6 +112,16 @@ def _render_single_question(
                 )
             ]
         )
+
+    # Stop button is always shown so the user can end the session at any time.
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text=STOP_QUIZ_BUTTON,
+                callback_data=STOP_QUIZ_DATA,
+            )
+        ]
+    )
 
     return text, keyboard
 
@@ -161,7 +177,12 @@ def _render_results(correct: int, incorrect: int, total: int) -> str:
 
 
 def _results_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard offered once an AI quiz is finished."""
+    """Keyboard offered once an AI quiz is finished.
+
+    No «Стоп» here on purpose: this screen is sent right after
+    ``state.clear()``, so ``callback_stop_quiz`` (bound to the AI quiz state)
+    would never observe the tap and the button would be silently dead.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=NEW_QUIZ_BUTTON, callback_data=NEW_QUIZ_DATA)],
@@ -300,6 +321,19 @@ async def _generate_and_send_quiz(
             latency_ms,
             tools_called_log,
         )
+
+
+async def start_ai_quiz(message: Message, state: FSMContext) -> Message | None:
+    """Launch an AI quiz for a message that carries no command text.
+
+    The /quiz_ai handler rejects payloads longer than 500 chars because that
+    guard is about user-typed prompts. A menu tap has no text at all, so it
+    enters through here and skips straight to generation.
+    """
+    if not settings.ai.enabled:
+        return await _send_fallback_quiz(message, "AI отключен в настройках")
+
+    return await _generate_and_send_quiz(message, state)
 
 
 @router.message(Command("quiz_ai"))
@@ -500,6 +534,30 @@ async def callback_next_question(callback: CallbackQuery, state: FSMContext) -> 
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
     )
     await callback.answer()
+
+
+@router.callback_query(
+    StateFilter(MyStates.waiting_for_ai_quiz_answer), F.data == STOP_QUIZ_DATA
+)
+async def callback_stop_quiz(callback: CallbackQuery, state: FSMContext) -> None:
+    """End the AI quiz from the inline «⏹ Стоп» button.
+
+    Scoped to the AI quiz state so the plain quiz keeps serving its own stop
+    button: both flows share the payload, only the state differs.
+    """
+    from src.handlers.common import stop_handler
+
+    message = callback.message
+    await callback.answer()
+
+    if not isinstance(message, Message):
+        await state.clear()
+        return
+
+    # Telegram keeps the keyboard of an edited message clickable, and with the
+    # state cleared none of its buttons can be served any more.
+    await message.edit_reply_markup(reply_markup=None)
+    await stop_handler(message=message, state=state)
 
 
 @router.callback_query(F.data == ADD_WORD_DATA)

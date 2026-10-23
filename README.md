@@ -7,16 +7,18 @@
 [![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type checking: MyPy](https://img.shields.io/badge/types-Mypy-blue.svg)](https://mypy.readthedocs.io/)
 
-An asynchronous, production-ready Telegram bot designed for interactive English vocabulary learning. It features a quiz system, custom dictionary management, and robust state handling, built with modern Python best practices.
+An asynchronous Telegram bot for interactive English vocabulary learning. Features a multiple-choice quiz, AI-powered quizzes via Ollama, personal dictionary management, and error statistics.
 
 ## Features
 
-- **Interactive Quiz**: Randomized multiple-choice questions drawn from both a common dictionary and the user's custom words.
-- **Custom Dictionary**: Users can add, view, and delete their own word-translation pairs.
-- **Robust State Management**: Utilizes Aiogram's FSM to guide users through multi-step flows (e.g., adding a word) without losing context.
-- **Idempotent Seeding**: Automatically populates the initial common dictionary on startup without creating duplicates.
-- **Proxy Support**: Built-in support for HTTP/SOCKS proxies, essential for regions with restricted Telegram API access.
-- **Strict Typing & Linting**: 100% type-annotated codebase enforced by `mypy` and `ruff`, with pre-commit hooks.
+- **Quiz** — randomized multiple-choice translation questions from a common and personal dictionary.
+- **AI Quiz** (`/quiz_ai`) — question generation via Ollama + MCP tools, considering the user's error history.
+- **Personal Dictionary** — add and delete words via inline buttons.
+- **Statistics** — error reports for the last day, week, month, or a custom period.
+- **FSM States** — multi-step flows without losing context.
+- **Idempotent Seeding** — automatic common dictionary population without duplicates.
+- **Proxy Support** — HTTP/SOCKS for bypassing Telegram API restrictions.
+- **Strict Typing** — 100% type-annotated code, checked by `mypy` and `ruff`.
 
 ## Tech Stack
 
@@ -24,122 +26,120 @@ An asynchronous, production-ready Telegram bot designed for interactive English 
 | :--- | :--- |
 | **Language** | Python 3.13 |
 | **Package Manager** | `uv` (Astral) |
-| **Telegram Framework** | `aiogram` 3.x |
-| **Database & ORM** | PostgreSQL, `SQLAlchemy` 2.0 (async), `asyncpg` |
+| **Telegram** | `aiogram` 3.x |
+| **Database** | PostgreSQL, `SQLAlchemy` 2.0 (async), `asyncpg` |
 | **Migrations** | `Alembic` |
 | **Configuration** | `pydantic` V2, `pydantic-settings` |
+| **AI** | Ollama (`openai`-compatible API), `fastmcp` |
 | **Testing** | `pytest`, `pytest-asyncio`, in-memory SQLite |
-| **Quality Assurance** | `ruff` (linting/formatting), `mypy`, `pre-commit` |
-| **Infrastructure** | Docker, Docker Compose (multi-stage builds) |
+| **Quality** | `ruff`, `mypy`, `pre-commit` |
+| **Infrastructure** | Docker, Docker Compose |
 
 ## Project Structure
 
-The project follows the standard `src` layout for clean separation of concerns:
-
 ```text
 EnglishCardBot/
-├── alembic/                 # Database migration scripts
+├── alembic/                 # Database migrations
 ├── src/
-│   ├── core/                # Core configurations (Pydantic settings, DB engine, middlewares)
-│   ├── db/                  # Database layer (SQLAlchemy models, repository queries)
-│   ├── handlers/            # Aiogram routers (common, quiz, words)
-│   ├── states/              # FSM state definitions
-│   ├── utils/               # Helper functions (e.g., input validators)
-│   └── main.py              # Application entry point
+│   ├── ai/                  # Ollama client, prompts, response schemas
+│   ├── core/                # Configuration, DB engine, middleware
+│   ├── db/                  # SQLAlchemy models, repository queries
+│   ├── handlers/            # Handlers: common, quiz, ai_quiz, stat, words
+│   ├── mcp/                 # MCP tools for AI quiz
+│   ├── states/              # FSM states
+│   ├── utils/               # Validators and utilities
+│   └── main.py              # Entry point
 ├── tests/                   # Unit and integration tests
-├── docker-compose.yml       # Local development & production orchestration
-├── Dockerfile               # Multi-stage production build
-├── pyproject.toml           # Project metadata, dependencies, and tool configs
+├── docker-compose.yml       # Service orchestration
+├── Dockerfile               # Multi-stage build
+├── pyproject.toml           # Dependencies and tool configs
 └── uv.lock                  # Deterministic dependency resolution
 ```
 
-## Quick Start (Local Development)
-
-We recommend the **"Containerized Dependencies"** pattern for local development. This keeps the database isolated in Docker while running the Python code on the host machine, allowing seamless integration with local proxy tools (like Hiddify).
+## Quick Start
 
 ### 1. Prerequisites
 - Python 3.13+
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) package manager
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Docker & Docker Compose
 
 ### 2. Installation
 ```bash
-# Clone the repository
 git clone https://github.com/Nikolai-Dmitrievich/EnglishCardBot.git
 cd EnglishCardBot
-
-# Install project dependencies (including dev tools)
 uv sync
 ```
 
-### 3. Environment Configuration
+### 3. Environment Setup
 ```bash
-# Copy the example environment file
 cp .env.example .env
-
-# Edit .env and add your Telegram Bot Token from @BotFather
-# Leave BOT__PROXY empty for direct connection, or set it to your local proxy (e.g., http://127.0.0.1:12334)
+# Open .env and add your token from @BotFather
 ```
 
-### 4. Run the Infrastructure
-Start only the PostgreSQL database in the background:
+### 4. Start the Database
 ```bash
 docker compose up db -d
 ```
-*(Note: The `docker-compose.yml` automatically exposes the DB on `localhost:5433` for local host access).*
 
-### 5. Run the Bot
+### 5. Start the Bot
 ```bash
-# Apply migrations and start the bot locally
 uv run python -m src.main
 ```
 
-## Production Deployment (Full Docker)
+## Full Docker Deployment
 
-To run the entire stack (Bot + Database) inside Docker:
+Runs the entire stack: bot + PostgreSQL + Ollama (with auto model download).
 
 ```bash
-# Build and start all services
 docker compose up --build -d
-
-# View logs
 docker compose logs -f bot
 ```
-> **Proxy Note for Docker**: If you are using a local proxy on your host machine, `127.0.0.1` will **not** work inside the container. You must either:
-> 1. Use `host.docker.internal` (Windows/macOS) or the Docker gateway IP (Linux) in your `.env`.
-> 2. Configure your proxy software to listen on `0.0.0.0` and use the host's LAN IP.
-> 3. Run the bot on the host machine (as described in the Quick Start section).
 
-## Testing & Quality Assurance
+> **Proxy in Docker:** `127.0.0.1` inside a container refers to the container itself. Use `host.docker.internal` (macOS/Windows) or the host's LAN IP (Linux), or run the bot on the host machine (see "Quick Start").
 
-The project is equipped with comprehensive automated checks.
+## Bot Commands
+
+| Command | Description |
+| :--- | :--- |
+| `/start` | Main menu with actions |
+| `/quiz` | Start a quiz |
+| `/quiz_ai` | AI-powered quiz based on your words |
+| `/stat` | Error statistics for a period |
+| `/stop` | Stop quiz / reset state |
+| `/help` | Command reference |
+
+## Tests & Quality
 
 ```bash
 # Run all tests
 uv run pytest
 
-# Run linter and auto-fixer
+# Linter and formatter
 uv run ruff check --fix .
 uv run ruff format .
 
-# Run static type checker
+# Type checking
 uv run mypy src/
 
-# Install pre-commit hooks (runs automatically on `git commit`)
+# Pre-commit hooks
 uv run pre-commit install
 uv run pre-commit run --all-files
 ```
 
 ## Environment Variables
 
-| Variable | Description | Default (Local) | Default (Docker) |
-| :--- | :--- | :--- | :--- |
-| `BOT__TOKEN` | Telegram Bot API Token *(Required)* | `your_bot_token_here` | N/A |
-| `BOT__PROXY` | Proxy URL for Telegram API | `""` (empty) | `""` |
-| `DB__POSTGRES_USER` | Database username | `postgres` | `postgres` |
-| `DB__POSTGRES_PASSWORD`| Database password | `postgres` | `postgres` |
-| `DB__POSTGRES_HOST` | Database host | `localhost` | `db` |
-| `DB__POSTGRES_PORT` | Database port | `5433` | `5432` |
-| `DB__POSTGRES_DB` | Database name | `english_card_bot` | `english_card_bot` |
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `BOT__TOKEN` | Telegram bot token *(required)* | `your_bot_token_here` |
+| `BOT__PROXY` | Proxy URL for Telegram API | `""` |
+| `DB__POSTGRES_USER` | Database username | `postgres` |
+| `DB__POSTGRES_PASSWORD` | Database password | `postgres` |
+| `DB__POSTGRES_HOST` | Database host | `localhost` (host), `db` (Docker) |
+| `DB__POSTGRES_PORT` | Database port | `5433` (host), `5432` (Docker) |
+| `DB__POSTGRES_DB` | Database name | `english_card_bot` |
+| `AI__ENABLED` | Enable AI quiz | `true` |
+| `AI__OLLAMA_BASE_URL` | Ollama URL | `http://localhost:11434` |
+| `AI__OLLAMA_MODEL` | Ollama model | `your_ai_model` |
+| `AI__REQUEST_TIMEOUT_SECONDS` | AI request timeout | `60` |
 
-*See `.env.example` for advanced SQLAlchemy engine and session configurations.*
+Full list with SQLAlchemy settings — see `.env.example`.

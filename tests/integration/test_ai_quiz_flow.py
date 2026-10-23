@@ -14,6 +14,9 @@ from sqlalchemy import select
 
 from src.db.models import WordError
 from src.db.queries import UserQueries, WordQueries
+from src.handlers.common import ADD_WORD_DATA as MENU_ADD_WORD
+from src.handlers.common import START_AI_QUIZ_DATA as MENU_AI_QUIZ
+from src.handlers.common import START_QUIZ_DATA as MENU_QUIZ
 from tests.conftest import TEST_USER_ID
 
 AI_QUIZ_STATE = "MyStates:waiting_for_ai_quiz_answer"
@@ -80,6 +83,25 @@ def ai_quiz_env(
 class TestAIQuizGeneration:
     """The /quiz_ai command must build a quiz from every available word source."""
 
+    async def test_quiz_command_prefix_does_not_match_quiz_ai(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm: list[dict[str, Any]],
+        fsm_state: Any,
+    ) -> None:
+        """Regression guard: ``Command("quiz")`` must not swallow ``/quiz_ai``.
+
+        Both commands live in different routers and ``common.router`` is
+        registered first, so a prefix-matching filter would start the plain
+        quiz and the AI flow would never run.
+        """
+        await client_ai.send("/quiz_ai")
+
+        assert "Выбери правильный перевод слова:" not in client_ai.texts
+        assert await fsm_state["state"]() == AI_QUIZ_STATE
+        assert len(stubbed_llm) == 1
+
     async def test_quiz_ai_starts_quiz_and_sets_state(
         self,
         client_ai: Any,
@@ -120,6 +142,27 @@ class TestAIQuizGeneration:
         await client_ai.send("/quiz_ai")
 
         assert len(stubbed_llm) == 2
+
+    async def test_menu_button_starts_ai_quiz(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm: list[dict[str, Any]],
+        fsm_state: Any,
+    ) -> None:
+        """/quiz_ai is also reachable as a button on the /start and /help menu.
+
+        The command handler refuses messages without text, so the button has
+        to enter through a path that does not check the payload length.
+        """
+        await client_ai.send("/start")
+        client_ai.clear()
+
+        await client_ai.tap(MENU_AI_QUIZ)
+
+        assert "Вопрос 1/2" in client_ai.last_text
+        assert await fsm_state["state"]() == AI_QUIZ_STATE
+        assert len(stubbed_llm) == 1
 
 
 class TestAIQuizRestart:
@@ -188,6 +231,52 @@ class TestAIQuizRestart:
         assert await fsm_state["state"]() == "MyStates:waiting_for_russian_word"
 
 
+class TestAIQuizStop:
+    """The inline «⏹ Стоп» button must end an AI quiz session."""
+
+    async def test_stop_button_clears_state_and_shows_message(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm: list[dict[str, Any]],
+        fsm_state: Any,
+    ) -> None:
+        await client_ai.send("/quiz_ai")
+        client_ai.clear()
+
+        await client_ai.tap("stop_quiz")
+
+        assert "Викторина остановлена" in client_ai.last_text
+        assert await fsm_state["state"]() is None
+
+    async def test_stop_button_is_rendered_on_question(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm: list[dict[str, Any]],
+    ) -> None:
+        await client_ai.send("/quiz_ai")
+
+        assert "⏹ Стоп" in client_ai.keyboard
+
+    async def test_stop_button_does_not_break_plain_quiz(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm: list[dict[str, Any]],
+        fsm_state: Any,
+    ) -> None:
+        """Both flows share the ``stop_quiz`` payload, only the state differs.
+
+        The AI handler is bound to ``waiting_for_ai_quiz_answer``, so stopping
+        an AI quiz must not leave the plain quiz unable to serve its own tap.
+        """
+        await client_ai.send("/quiz_ai")
+        await client_ai.tap("stop_quiz")
+
+        assert await fsm_state["state"]() is None
+
+
 class TestAIQuizIsolation:
     """AI quiz callbacks must not leak into the plain quiz and vice versa."""
 
@@ -199,12 +288,34 @@ class TestAIQuizIsolation:
         fsm_state: Any,
     ) -> None:
         await client_ai.send("/start")
+        await client_ai.tap(MENU_QUIZ)
         client_ai.clear()
 
         await client_ai.tap("ans:0")
 
         assert TEST_USER_ID is not None
         assert await fsm_state["state"]() == "MyStates:waiting_for_quiz_answer"
+
+    async def test_menu_add_word_not_swallowed_by_ai_router(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm: list[dict[str, Any]],
+        fsm_state: Any,
+    ) -> None:
+        """ai_quiz owns the bare ``add_word`` payload; the menu does not.
+
+        Both routers register a handler for word management, so the menu's
+        namespaced payload is what keeps /start usable while the AI router is
+        attached. Without it the tap would be served by ai_quiz instead.
+        """
+        await client_ai.send("/start")
+        client_ai.clear()
+
+        await client_ai.tap(MENU_ADD_WORD)
+
+        assert "Введите новое русское слово" in client_ai.last_text
+        assert await fsm_state["state"]() == "MyStates:waiting_for_russian_word"
 
 
 class TestAIQuizErrorTracking:

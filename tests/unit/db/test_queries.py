@@ -210,6 +210,36 @@ class TestGetRandomWord:
         word, _, _ = await WordQueries.get_random_word_for_user(session, user)
         assert word is not None
 
+    async def test_exclude_words_filters_out_seen_words(
+        self, session: AsyncSession, common_words: Any
+    ) -> None:
+        """Words listed in ``exclude_words`` must not be returned."""
+        user = await UserQueries.create_user(session, "100")
+
+        # Pick one word, then exclude it — the next call must return a different one.
+        first_word, _, _ = await WordQueries.get_random_word_for_user(session, user)
+        assert first_word is not None
+
+        seen: set[str] = set()
+        for _ in range(60):
+            word, _, _ = await WordQueries.get_random_word_for_user(
+                session, user, exclude_words=list(seen)
+            )
+            if word is not None:
+                seen.add(word)
+
+        # With 4 common words the pool should be exhausted quickly.
+        assert len(seen) == len(common_words)
+
+    async def test_exclude_empty_returns_any_word(
+        self, session: AsyncSession, common_words: Any
+    ) -> None:
+        """An empty exclude list must not filter anything out."""
+        user = await UserQueries.create_user(session, "100")
+
+        word, _, _ = await WordQueries.get_random_word_for_user(session, user, [])
+        assert word is not None
+
 
 class TestGetWrongTranslations:
     """Tests for generating incorrect translation options for quizzes."""
