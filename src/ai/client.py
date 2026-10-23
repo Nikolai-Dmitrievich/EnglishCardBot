@@ -96,6 +96,8 @@ class OllamaClient:
             except _EmptyResponseError:
                 # Empty content — retry once
                 if attempt == max_attempts - 1:
+                    # ``from None``: the sentinel carries no extra context, so
+                    # the chain would only bury the real reason (empty output).
                     raise LLMUnavailableError("LLM returned empty response") from None
                 logger.info(
                     "LLM returned empty content, retrying (attempt %d)",

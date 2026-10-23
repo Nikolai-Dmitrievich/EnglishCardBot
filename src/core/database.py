@@ -36,7 +36,7 @@ engine = create_async_engine(
     pool_recycle=eng_cfg.pool_recycle,
     pool_size=eng_cfg.pool_size,
     max_overflow=eng_cfg.max_overflow,
-    connect_args=connect_args or None,
+    connect_args=connect_args,
 )
 
 

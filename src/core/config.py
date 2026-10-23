@@ -82,7 +82,7 @@ class AISettings(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str
     request_timeout_seconds: int = Field(default=60, gt=0)
-    prompt_version: str = "tutor_v1"
+    prompt_version: str = "tutor_v2"
     num_ctx: int = 4096
 
 

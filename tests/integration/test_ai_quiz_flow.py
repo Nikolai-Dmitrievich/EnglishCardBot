@@ -28,12 +28,22 @@ async def _word_errors(session: Any) -> list[WordError]:
     return list(result.scalars().all())
 
 
-def _quiz_payload(question_count: int = 2) -> str:
-    """Build a QuizResponse-shaped JSON payload for the stubbed LLM."""
+def _quiz_payload(question_count: int = 2, *, leak_answer: bool = False) -> str:
+    """Build a QuizResponse-shaped JSON payload for the stubbed LLM.
+
+    The default payload satisfies ``validate_quiz``: every sentence carries the
+    ``____`` blank and never spells out its own correct option. ``leak_answer``
+    reproduces the failure the post-validation exists to catch.
+    """
+    options = ["apple", "banana", "cherry", "date"]
     questions = [
         {
-            "question": f"What is the English word for 'слово{i}'?",
-            "options": ["apple", "banana", "cherry", "date"],
+            "question": (
+                f"I keep the {options[i % 4]} in my bag for lesson {i}."
+                if leak_answer
+                else f"I keep the ____ in my bag for lesson {i}."
+            ),
+            "options": options,
             "correct_index": i % 4,
             "explanation_ru": f"Пояснение {i}",
         }
@@ -67,6 +77,34 @@ def stubbed_llm(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         fake_complete_with_format,
     )
     return calls
+
+
+@pytest.fixture
+def stubbed_llm_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Stub the LLM with a scripted list of payloads, one per call.
+
+    Lets a test make the first attempt leak the answer and the second one be
+    well-formed, which is exactly the retry path post-validation takes.
+    """
+    calls: list[dict[str, Any]] = []
+    payloads: list[str] = []
+
+    async def fake_complete_with_format(
+        messages: list[dict],
+        format_schema: dict,
+        timeout: int,
+    ) -> str:
+        calls.append({"messages": messages, "schema": format_schema})
+        index = min(len(calls) - 1, len(payloads) - 1)
+        return payloads[index]
+
+    monkeypatch.setattr(
+        "src.handlers.ai_quiz.llm_client.complete_with_format",
+        fake_complete_with_format,
+    )
+    return calls, payloads
 
 
 @pytest.fixture
@@ -163,6 +201,79 @@ class TestAIQuizGeneration:
         assert "Вопрос 1/2" in client_ai.last_text
         assert await fsm_state["state"]() == AI_QUIZ_STATE
         assert len(stubbed_llm) == 1
+
+
+class TestAIQuizPostValidation:
+    """A question that spells out its own answer must never reach the user.
+
+    ``validate_quiz`` catches the failure mode the prompt cannot fully prevent:
+    the model returns a well-formed sentence with the correct option already in
+    it, which makes the quiz trivial. Such a quiz is regenerated once, and only
+    then does the flow fall back to the plain quiz.
+    """
+
+    async def test_leaked_answer_triggers_regeneration(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm_sequence: tuple[list[dict[str, Any]], list[str]],
+        fsm_state: Any,
+    ) -> None:
+        calls, payloads = stubbed_llm_sequence
+        payloads.append(_quiz_payload(leak_answer=True))
+        payloads.append(_quiz_payload())
+
+        await client_ai.send("/quiz_ai")
+
+        assert len(calls) == 2
+        assert "Вопрос 1/2" in client_ai.last_text
+        assert await fsm_state["state"]() == AI_QUIZ_STATE
+
+    async def test_retry_prompt_names_the_broken_rule(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm_sequence: tuple[list[dict[str, Any]], list[str]],
+    ) -> None:
+        """The second request must not be a blind resend of the same prompt."""
+        calls, payloads = stubbed_llm_sequence
+        payloads.append(_quiz_payload(leak_answer=True))
+        payloads.append(_quiz_payload())
+
+        await client_ai.send("/quiz_ai")
+
+        first_prompt = calls[0]["messages"][0]["content"]
+        second_prompt = calls[1]["messages"][0]["content"]
+        assert "____" in second_prompt[len(first_prompt) :]
+
+    async def test_leaked_answer_falls_back_after_second_attempt(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm_sequence: tuple[list[dict[str, Any]], list[str]],
+        fsm_state: Any,
+    ) -> None:
+        calls, payloads = stubbed_llm_sequence
+        payloads.append(_quiz_payload(leak_answer=True))
+
+        await client_ai.send("/quiz_ai")
+
+        assert len(calls) == 2
+        assert "Не удалось создать AI-квиз" in client_ai.last_text
+        assert await fsm_state["state"]() is None
+
+    async def test_valid_quiz_is_not_regenerated(
+        self,
+        client_ai: Any,
+        ai_quiz_env: Any,
+        stubbed_llm_sequence: tuple[list[dict[str, Any]], list[str]],
+    ) -> None:
+        calls, payloads = stubbed_llm_sequence
+        payloads.append(_quiz_payload())
+
+        await client_ai.send("/quiz_ai")
+
+        assert len(calls) == 1
 
 
 class TestAIQuizRestart:

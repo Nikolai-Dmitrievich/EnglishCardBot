@@ -4,7 +4,13 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class QuizQuestion(BaseModel):
-    question: str = Field(description="Question in English")
+    question: str = Field(
+        description=(
+            "English fill-in-the-blank sentence of 5-10 words. It MUST contain the "
+            "exact blank ____ (four underscores) where the target word belongs, and "
+            "must not contain the correct option in any form."
+        )
+    )
     options: list[str] = Field(
         min_length=2,
         max_length=4,

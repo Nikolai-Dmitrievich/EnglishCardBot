@@ -26,9 +26,9 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.ai.client import LLMUnavailableError, llm_client
-from src.ai.prompts import TUTOR_PROMPT_V1
+from src.ai.prompts import TUTOR_PROMPT_V2
 from src.ai.schemas import LLMInvalidOutputError, QuizResponse
-from src.ai.utils import extract_tool_data
+from src.ai.utils import extract_tool_data, validate_quiz
 from src.core.config import settings
 from src.db.models import User
 from src.db.queries import WordQueries
@@ -65,6 +65,19 @@ NEW_QUIZ_BUTTON = "🔄 Новый квиз"
 ADD_WORD_BUTTON = "📝 Добавить слово"
 
 STALE_QUIZ_ALERT = "Этот квиз больше не актуален — нажмите «Новый квиз»."
+
+# Attempts allowed for one /quiz_ai request. The second one only happens when
+# the generated quiz passes Pydantic but fails the fill-in-the-blank check,
+# i.e. the model leaked the answer into the sentence.
+MAX_QUIZ_ATTEMPTS = 2
+
+# Appended on a retry to name the exact rule the model broke, instead of
+# resending the same prompt and hoping for a different answer.
+RETRY_FIX_NOTE = (
+    "\n\nCRITICAL FIX: your previous response broke the fill-in-the-blank rule. "
+    "Every question must contain the blank ____ and must NOT contain the correct "
+    "option anywhere in its sentence. Rewrite all questions accordingly."
+)
 
 
 async def _send_fallback_quiz(message: Message, reason: str) -> Message:
@@ -248,6 +261,7 @@ async def _generate_and_send_quiz(
     started = time.perf_counter()
     tools_called_log: list[dict] = []
     content = ""
+    max_retries = MAX_QUIZ_ATTEMPTS
 
     try:
         async with Client(FastMCPTransport(mcp)) as client:
@@ -275,23 +289,43 @@ async def _generate_and_send_quiz(
             "all_words": extract_tool_data(all_res) or [],
         }
 
-        final_prompt = TUTOR_PROMPT_V1.format(
+        final_prompt = TUTOR_PROMPT_V2.format(
             user_data=json.dumps(user_context, ensure_ascii=False, indent=2)
         )
 
-        content = await llm_client.complete_with_format(
-            messages=[
-                {"role": "user", "content": final_prompt},
-            ],
-            format_schema=QuizResponse.model_json_schema(),
-            timeout=settings.ai.request_timeout_seconds,
-        )
+        quiz: QuizResponse | None = None
+        for attempt in range(max_retries):
+            content = await llm_client.complete_with_format(
+                messages=[
+                    {"role": "user", "content": final_prompt},
+                ],
+                format_schema=QuizResponse.model_json_schema(),
+                timeout=settings.ai.request_timeout_seconds,
+            )
 
-        quiz = QuizResponse.model_validate_json(content)
+            parsed = QuizResponse.model_validate_json(content)
 
-        for q in quiz.questions:
-            if q.correct_index >= len(q.options):
-                raise LLMInvalidOutputError("correct_index вне диапазона options")
+            for q in parsed.questions:
+                if q.correct_index >= len(q.options):
+                    raise LLMInvalidOutputError("correct_index вне диапазона options")
+
+            errors = validate_quiz(parsed)
+            if not errors:
+                quiz = parsed
+                break
+
+            logger.warning(
+                "AI quiz failed fill-in-the-blank check (attempt %d/%d): %s",
+                attempt + 1,
+                max_retries,
+                errors,
+            )
+            final_prompt += RETRY_FIX_NOTE
+
+        # A question that spells out its own answer teaches nothing, so an
+        # still-broken retry falls back to the plain quiz rather than showing it.
+        if quiz is None:
+            raise LLMInvalidOutputError("questions leaked the correct answer")
 
         await thinking.delete()
         return await _send_quiz(message, quiz, state)
