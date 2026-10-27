@@ -81,7 +81,9 @@ RETRY_FIX_NOTE = (
 
 
 async def _send_fallback_quiz(message: Message, reason: str) -> Message:
-    return await message.answer(f"{reason}. Вот обычный квиз:")
+    return await message.answer(
+        f"{reason}. Если захотите продолжить — напишите /start."
+    )
 
 
 def _render_single_question(
