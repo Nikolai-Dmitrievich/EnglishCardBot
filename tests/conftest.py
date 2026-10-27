@@ -30,7 +30,7 @@ from sqlalchemy.pool import StaticPool
 from src.core.database import DatabaseMiddleware
 from src.db.models import Base, Word
 from src.db.queries import TECH_WORDS_DATA
-from src.handlers import common, quiz, words
+from src.handlers import ai_quiz, common, quiz, stat, words
 
 # ==============================================================================
 # ENVIRONMENT SETUP
@@ -71,6 +71,11 @@ class RecordingSession(BaseSession):
         super().__init__()
         self.sent: list[TelegramMethod[Any]] = []
         self._message_id = 0
+        # Chat/message of the last sent message: callback queries must be
+        # attached to a real message, otherwise handlers that read
+        # ``callback.message`` bail out early.
+        self.last_chat_id = TEST_CHAT_ID
+        self.last_message_id = 0
 
     async def close(self) -> None:
         pass
@@ -81,21 +86,40 @@ class RecordingSession(BaseSession):
         self.sent.append(method)
         self._message_id += 1
 
-        # Return a mock Message object for SendMessage methods
+        # Returned messages are mounted on the bot via ``as_``: handlers
+        # routinely chain ``.delete()`` / ``.edit_text()`` on the reply, and
+        # those helpers need the bot instance to build their request.
+        #
+        # Edits target an existing message, so its id must be preserved —
+        # otherwise a callback built from the response would point at a
+        # message that never existed. Checked first because EditMessageText
+        # carries ``text`` too.
+        if hasattr(method, "chat_id") and hasattr(method, "message_id"):
+            result = Message(
+                message_id=method.message_id,
+                date=datetime.now(tz=UTC),
+                chat=Chat(id=method.chat_id, type="private"),  # type: ignore[arg-type]
+            ).as_(bot)
+            self.last_chat_id = result.chat.id
+            self.last_message_id = result.message_id
+            return result
+
         if hasattr(method, "chat_id") and hasattr(method, "text"):
-            return Message(
+            result = Message(
                 message_id=self._message_id,
                 date=datetime.now(tz=UTC),
                 chat=Chat(id=method.chat_id, type="private"),  # type: ignore[arg-type]
                 text=method.text,  # type: ignore[arg-type]
-            )
+            ).as_(bot)
+            self.last_chat_id = result.chat.id
+            self.last_message_id = result.message_id
+            return result
 
-        # Fallback for other method types
         return Message(
             message_id=self._message_id,
             date=datetime.now(tz=UTC),
             chat=Chat(id=TEST_CHAT_ID, type="private"),
-        )
+        ).as_(bot)
 
     async def stream_content(
         self,
@@ -109,15 +133,31 @@ class RecordingSession(BaseSession):
 
     @property
     def texts(self) -> list[str]:
-        """Retrieve the text content of all sent messages."""
-        return [str(method.text) for method in self.sent if hasattr(method, "text")]
+        """Retrieve the text content of all sent messages.
+
+        Only message-carrying calls count here. ``AnswerCallbackQuery`` also
+        exposes a ``text`` field (the toast/alert), which is ``None`` for
+        plain acknowledgements and would otherwise surface as the literal
+        string ``"None"`` and mask the real reply.
+        """
+        return [
+            str(method.text)  # type: ignore[attr-defined]
+            for method in self.sent
+            if hasattr(method, "chat_id") and getattr(method, "text", None) is not None
+        ]
 
     def last_keyboard(self) -> list[str]:
-        """Return button labels of the last message that had a reply keyboard."""
+        """Return button labels of the last message that had a keyboard."""
         for method in reversed(self.sent):
             markup = getattr(method, "reply_markup", None)
-            if markup is not None and hasattr(markup, "keyboard"):
+            if markup is None:
+                continue
+            # ReplyKeyboardMarkup
+            if hasattr(markup, "keyboard"):
                 return [button.text for row in markup.keyboard for button in row]
+            # InlineKeyboardMarkup
+            if hasattr(markup, "inline_keyboard"):
+                return [button.text for row in markup.inline_keyboard for button in row]
         return []
 
     def clear(self) -> None:
@@ -209,7 +249,7 @@ def dp(session_factory: async_sessionmaker[AsyncSession]):
     """
     dispatcher = Dispatcher(storage=MemoryStorage())
 
-    routers = (common.router, quiz.router, words.router)
+    routers = (common.router, stat.router, ai_quiz.router, quiz.router, words.router)
     for router in routers:
         dispatcher.include_router(router)
 
@@ -224,56 +264,108 @@ def dp(session_factory: async_sessionmaker[AsyncSession]):
         router._parent_router = None
 
 
-@pytest.fixture
-def client(bot: Bot, dp: Dispatcher):
-    """
-    Provide a test client for integration testing.
+class TestClient:
+    """Drives the dispatcher with synthetic updates and reads bot replies.
 
-    This client constructs Update objects and feeds them to the dispatcher,
-    allowing tests to simulate user messages and inspect bot responses.
+    Bound to a specific (bot, dispatcher) pair so the same client can be used
+    against the plain router stack and the one that also registers ai_quiz.
     """
 
-    class TestClient:
-        def __init__(self) -> None:
-            self.update_id = 0
+    def __init__(self, bot: Bot, dp: Dispatcher) -> None:
+        self.bot = bot
+        self.dp = dp
+        self.update_id = 0
 
-        async def send(self, text: str, user_id: int = TEST_USER_ID) -> None:
-            self.update_id += 1
-            update = Update.model_validate(
-                {
-                    "update_id": self.update_id,
+    async def send(self, text: str, user_id: int = TEST_USER_ID) -> None:
+        self.update_id += 1
+        update = Update.model_validate(
+            {
+                "update_id": self.update_id,
+                "message": {
+                    "message_id": self.update_id,
+                    "date": int(datetime.now(tz=UTC).timestamp()),
+                    "chat": {"id": user_id, "type": "private"},
+                    "from": {
+                        "id": user_id,
+                        "is_bot": False,
+                        "first_name": "Nikolai",
+                    },
+                    "text": text,
+                },
+            },
+            context={"bot": self.bot},
+        )
+        await self.dp.feed_update(self.bot, update)
+
+    async def tap(self, data: str, user_id: int = TEST_USER_ID) -> None:
+        """Simulate an inline button tap on the bot's last sent message.
+
+        Inline keyboards are a separate update type, so tests that need to
+        press a button (rather than type the same label as text) have to
+        build a CallbackQuery themselves. The message is taken from the
+        session's bookkeeping because handlers routinely read
+        ``callback.message`` to edit or reply to the tapped message.
+        """
+        self.update_id += 1
+        session = self.bot.session
+        update = Update.model_validate(
+            {
+                "update_id": self.update_id,
+                "callback_query": {
+                    "id": str(self.update_id),
+                    "from": {
+                        "id": user_id,
+                        "is_bot": False,
+                        "first_name": "Nikolai",
+                    },
                     "message": {
-                        "message_id": self.update_id,
+                        "message_id": session.last_message_id,  # type: ignore[attr-defined]
                         "date": int(datetime.now(tz=UTC).timestamp()),
                         "chat": {"id": user_id, "type": "private"},
                         "from": {
-                            "id": user_id,
-                            "is_bot": False,
-                            "first_name": "Nikolai",
+                            "id": 42,
+                            "is_bot": True,
+                            "first_name": "TestBot",
                         },
-                        "text": text,
                     },
+                    "chat_instance": "test-chat-instance",
+                    "data": data,
                 },
-                context={"bot": bot},
-            )
-            await dp.feed_update(bot, update)
+            },
+            context={"bot": self.bot},
+        )
+        await self.dp.feed_update(self.bot, update)
 
-        @property
-        def texts(self) -> list[str]:
-            return bot.session.texts  # type: ignore[attr-defined]
+    @property
+    def texts(self) -> list[str]:
+        return self.bot.session.texts  # type: ignore[attr-defined]
 
-        @property
-        def last_text(self) -> str:
-            return bot.session.texts[-1]  # type: ignore[attr-defined]
+    @property
+    def last_text(self) -> str:
+        return self.bot.session.texts[-1]  # type: ignore[attr-defined]
 
-        @property
-        def keyboard(self) -> list[str]:
-            return bot.session.last_keyboard()  # type: ignore[attr-defined]
+    @property
+    def keyboard(self) -> list[str]:
+        return self.bot.session.last_keyboard()  # type: ignore[attr-defined]
 
-        def clear(self) -> None:
-            bot.session.clear()  # type: ignore[attr-defined]
+    def clear(self) -> None:
+        self.bot.session.clear()  # type: ignore[attr-defined]
 
-    return TestClient()
+
+@pytest.fixture
+def client(bot: Bot, dp: Dispatcher) -> TestClient:
+    """Provide a test client wired to the plain (non-AI) router stack."""
+    return TestClient(bot, dp)
+
+
+@pytest.fixture
+def client_ai(bot: Bot, dp: Dispatcher) -> TestClient:
+    """Test client that also reaches the ai_quiz router.
+
+    Uses the same ``dp`` fixture (which now includes ``ai_quiz.router``) so
+    there is no router-conflict between the two clients.
+    """
+    return TestClient(bot, dp)
 
 
 @pytest_asyncio.fixture

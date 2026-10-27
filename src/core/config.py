@@ -77,6 +77,15 @@ class BotSettings(BaseModel):
         return value
 
 
+class AISettings(BaseModel):
+    enabled: bool = True
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str
+    request_timeout_seconds: int = Field(default=60, gt=0)
+    prompt_version: str = "tutor_v2"
+    num_ctx: int = 4096
+
+
 class Settings(BaseSettings):
     """
     Root application settings.
@@ -87,6 +96,7 @@ class Settings(BaseSettings):
 
     bot: BotSettings
     db: DatabaseSettings
+    ai: AISettings
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -97,4 +107,21 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """
+    Lazily initialise and return the global ``Settings`` instance.
+
+    On first call the settings are loaded from environment variables / ``.env``
+    file.  Subsequent calls return the cached instance.
+
+    Raises:
+        pydantic.ValidationError: If required environment variables are missing
+            or contain invalid values.
+    """
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings

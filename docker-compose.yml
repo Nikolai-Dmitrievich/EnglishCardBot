@@ -12,7 +12,7 @@ services:
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB__POSTGRES_USER:-postgres} -d ${DB__POSTGRES_DB:-english_card_bot}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -31,15 +31,72 @@ services:
     environment:
       DB__POSTGRES_HOST: db
       DB__POSTGRES_PORT: "5432"
-      BOT__PROXY: ""
+      AI__ENABLED: ${AI__ENABLED:-true}
+      # Native Ollama base URL (no /v1): the bot talks to /api/chat, which is
+      # the only endpoint that honours "think": false for reasoning models.
+      AI__OLLAMA_BASE_URL: http://ollama:11434
+      AI__OLLAMA_MODEL: ${AI__OLLAMA_MODEL:-qwen2.5:7b}
+      AI__REQUEST_TIMEOUT_SECONDS: ${AI__REQUEST_TIMEOUT_SECONDS:-60}
+      AI__PROMPT_VERSION: ${AI__PROMPT_VERSION:-tutor_v1}
+      AI__NUM_CTX: ${AI__NUM_CTX:-4096}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - bot_network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: english_bot_ollama
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    devices:
+      - /dev/dri      # Intel/AMD integrated graphics
+      - /dev/kfd      # AMD ROCm
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HIP_VISIBLE_DEVICES=0
+      - ROCR_VISIBLE_DEVICES=0
+      - OLLAMA_VULKAN=1
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - bot_network
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: english_bot_ollama_init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Pulling model ${AI__OLLAMA_MODEL:-qwen2.5:7b}...' &&
+      ollama pull ${AI__OLLAMA_MODEL:-qwen2.5:7b} &&
+      echo 'Model downloaded successfully'
+      "
     networks:
       - bot_network
 
 volumes:
   pgdata:
+    driver: local
+  ollama_models:
     driver: local
 
 networks:

@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import Word
+from src.db.models import Word, WordError
 from src.db.queries import UserQueries, WordQueries
 
 
@@ -210,6 +210,36 @@ class TestGetRandomWord:
         word, _, _ = await WordQueries.get_random_word_for_user(session, user)
         assert word is not None
 
+    async def test_exclude_words_filters_out_seen_words(
+        self, session: AsyncSession, common_words: Any
+    ) -> None:
+        """Words listed in ``exclude_words`` must not be returned."""
+        user = await UserQueries.create_user(session, "100")
+
+        # Pick one word, then exclude it — the next call must return a different one.
+        first_word, _, _ = await WordQueries.get_random_word_for_user(session, user)
+        assert first_word is not None
+
+        seen: set[str] = set()
+        for _ in range(60):
+            word, _, _ = await WordQueries.get_random_word_for_user(
+                session, user, exclude_words=list(seen)
+            )
+            if word is not None:
+                seen.add(word)
+
+        # With 4 common words the pool should be exhausted quickly.
+        assert len(seen) == len(common_words)
+
+    async def test_exclude_empty_returns_any_word(
+        self, session: AsyncSession, common_words: Any
+    ) -> None:
+        """An empty exclude list must not filter anything out."""
+        user = await UserQueries.create_user(session, "100")
+
+        word, _, _ = await WordQueries.get_random_word_for_user(session, user, [])
+        assert word is not None
+
 
 class TestGetWrongTranslations:
     """Tests for generating incorrect translation options for quizzes."""
@@ -307,3 +337,57 @@ class TestPopulateCommonWords:
         computer = await session.scalar(select(Word).where(Word.word == "компьютер"))
         assert computer is not None
         assert computer.translation == "computer"
+
+
+class TestRecordErrorForTranslation:
+    """Tests for recording errors by English translation (AI quiz path)."""
+
+    async def test_records_error_for_user_word_translation(
+        self, session: AsyncSession
+    ) -> None:
+        """Verify that an error on a user word's translation is recorded."""
+        user = await UserQueries.create_user(session, "100")
+        await WordQueries.add_user_word(session, user, "массив", "array")
+
+        await WordQueries.record_error_for_translation(session, user, "array")
+
+        errors = await session.scalars(select(WordError))
+        error_list = list(errors)
+        assert len(error_list) == 1
+        assert error_list[0].user_word_id is not None
+        assert error_list[0].common_word_id is None
+
+    async def test_records_error_for_common_word_translation(
+        self, session: AsyncSession, common_words: Any
+    ) -> None:
+        """Verify that an error on a common word's translation is recorded."""
+        user = await UserQueries.create_user(session, "100")
+
+        await WordQueries.record_error_for_translation(session, user, "computer")
+
+        errors = await session.scalars(select(WordError))
+        error_list = list(errors)
+        assert len(error_list) == 1
+        assert error_list[0].user_word_id is None
+        assert error_list[0].common_word_id is not None
+
+    async def test_merges_errors_across_quiz_types(
+        self, session: AsyncSession, common_words: Any
+    ) -> None:
+        """Verify that errors from plain quiz (by word) and AI quiz
+        (by translation) are recorded against the same dictionary entry."""
+        user = await UserQueries.create_user(session, "100")
+        await WordQueries.add_user_word(session, user, "массив", "array")
+
+        # Plain quiz records by Russian word
+        await WordQueries.record_error_for_word(session, user, "массив")
+        # AI quiz records by English translation
+        await WordQueries.record_error_for_translation(session, user, "array")
+
+        total = await session.scalar(
+            select(func.count(WordError.id)).where(
+                WordError.user_id == user.id,
+                WordError.user_word_id.is_not(None),
+            )
+        )
+        assert total == 2

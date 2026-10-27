@@ -15,12 +15,12 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from src.core.config import settings
+from src.core.config import get_settings
 from src.db.models import Base
 
 config = context.config
 
-config.set_main_option("sqlalchemy.url", settings.db.db_url)
+config.set_main_option("sqlalchemy.url", get_settings().db.db_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

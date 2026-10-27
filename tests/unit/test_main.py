@@ -28,41 +28,38 @@ class _FailingSession:
     async def execute(self, *args: Any, **kwargs: Any) -> None:
         raise SQLAlchemyError("database is unavailable")
 
+    async def commit(self) -> None:
+        pass
+
+    async def rollback(self) -> None:
+        pass
+
 
 class TestSeedInitialWords:
     """Tests for the idempotent startup seeding of the common dictionary."""
 
     async def test_seeds_full_dictionary(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        monkeypatch.setattr(bot_main, "session_factory", session_factory)
-
-        added = await bot_main.seed_initial_words()
+        added = await bot_main.seed_initial_words(session_factory)
 
         assert added == len(bot_main.TECH_WORDS_DATA)
 
     async def test_second_run_adds_nothing(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        monkeypatch.setattr(bot_main, "session_factory", session_factory)
-
-        await bot_main.seed_initial_words()
-        added = await bot_main.seed_initial_words()
+        await bot_main.seed_initial_words(session_factory)
+        added = await bot_main.seed_initial_words(session_factory)
 
         assert added == 0
 
     async def test_seeded_words_are_persisted(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        monkeypatch.setattr(bot_main, "session_factory", session_factory)
-
-        await bot_main.seed_initial_words()
+        await bot_main.seed_initial_words(session_factory)
 
         async with session_factory() as verifier:
             total = await verifier.scalar(select(func.count()).select_from(Word))
@@ -70,20 +67,18 @@ class TestSeedInitialWords:
 
     async def test_existing_partial_dictionary_is_completed(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         session_factory: async_sessionmaker[AsyncSession],
         session: AsyncSession,
     ) -> None:
-        monkeypatch.setattr(bot_main, "session_factory", session_factory)
         session.add(Word(word="компьютер", translation="computer"))
         await session.commit()
 
-        added = await bot_main.seed_initial_words()
+        added = await bot_main.seed_initial_words(session_factory)
 
         assert added == len(bot_main.TECH_WORDS_DATA) - 1
 
     async def test_database_error_is_swallowed(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """
         Seeding must never abort startup.
@@ -92,9 +87,7 @@ class TestSeedInitialWords:
         as zero added words so that the bot can still start and serve content
         that is already present.
         """
-        monkeypatch.setattr(bot_main, "session_factory", _FailingSession)
-
-        added = await bot_main.seed_initial_words()
+        added = await bot_main.seed_initial_words(_FailingSession)  # type: ignore[arg-type]
 
         assert added == 0
         assert "Database error while seeding" in caplog.text
